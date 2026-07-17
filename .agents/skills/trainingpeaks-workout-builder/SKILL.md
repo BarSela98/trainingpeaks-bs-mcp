@@ -4,8 +4,8 @@ description: >-
   Build, create, import, or update TrainingPeaks workouts with correct interval
   structure, calibrated pace/power targets, and post-write validation. Use for
   individual workouts or tabular/CSV training plans, including requests to set
-  intervals, quantize watch pace targets, preserve coach notes, or reconcile
-  planned duration and distance with the structured workout.
+  intervals, quantize watch pace targets, repair invalid or equal intensity
+  ranges, preserve coach notes, or reconcile planned duration and distance.
 ---
 
 # TrainingPeaks Workout Builder
@@ -167,6 +167,19 @@ make a one-watch-increment band on the less intense side: a `5:30/km` target
 becomes `5:35–5:30/km`. For power or heart rate, use the smallest meaningful
 display increment below the target. Preserve the named target in the step name.
 Run `scripts/workout_math.py validate-ranges STRUCTURE.json` before writing.
+
+For an existing workout with point targets, fetch its full detail and repair a
+copy with `repair-equal-ranges`; do not rebuild it from memory. The command
+supports simplified and native TP structures and changes only equal target
+ranges. It converts `0–0` rest to `0–1`; for pace it quantizes the named target
+and adds one watch increment on the slower side. It refuses reversed ranges,
+which require source review.
+
+```bash
+scripts/workout_math.py repair-equal-ranges workout.json \
+  --metric pace --threshold LIVE_MPS --increment 5 --output fixed.json
+scripts/workout_math.py validate-ranges fixed.json
+```
 
 ### Typical intensity zones (running)
 
@@ -405,6 +418,20 @@ When the user provides a full week (or multiple days) at once:
    not delegate one workout per agent.
 6. Collect results and report a summary table (day | action | title | ID).
 
+### Repairing equal ranges in existing workouts
+
+1. Fetch live settings once, the date range once, and full details for only the
+   affected workout IDs.
+2. Preserve every name, length, repetition count, intensity class,
+   `openDuration`, cadence target, description, and title. Change only equal
+   target pairs; compute `distance_km` from the preserved structure.
+3. Count the proposed changes and require it to match the audit count. Validate
+   every nested step before writing.
+4. Update independent workouts in bounded parallel batches.
+5. Re-fetch each updated workout and recursively scan the returned native
+   `targets`; require `minValue < maxValue` everywhere. A successful write
+   response alone is not validation.
+
 ## Creating workouts from a CSV training plan
 
 When the user provides a CSV file with a multi-week training plan:
@@ -483,6 +510,7 @@ tp_create_workout(
 - [ ] Passed `distance_km` alongside distance-based structures
 - [ ] Quantized every displayed pace and title midpoint before % conversion
 - [ ] Verified `intensity_min < intensity_max` for every step; no point targets
+- [ ] For repairs: changed only audited target pairs and rejected reversed ranges
 - [ ] Expanded repetitions when calculating distance and timed-set totals
 - [ ] Made the prescribed main-set duration exact, including any remainder step
 - [ ] For easy/recovery sessions with no targets: omit `structure`, pass only `duration_minutes`
