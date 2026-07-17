@@ -21,6 +21,12 @@ percentOfThresholdPace = (1000 / pace_seconds_per_km) / threshold_m_per_s * 100
 Do not round the percentage to an integer if exact display behavior matters.
 Retain enough precision for TrainingPeaks to reconstruct the requested pace.
 
+Never encode a named target as equal minimum and maximum values. If only one
+pace is prescribed, use one display increment on its slower side. For example,
+encode `5:30/km` as `5:35–5:30/km`, not as `5:30–5:30/km`. This keeps the watch
+target achievable without asking the athlete to run faster than prescribed.
+Use 0–1% for static rest instead of 0–0%.
+
 ## Arithmetic rules
 
 Expand repetition blocks when totaling fixed distance:
@@ -47,7 +53,7 @@ cycles plus 1 minute moderate.
 ## Validation layers
 
 1. Before writing, run local arithmetic and `tp_validate_structure` when
-   available.
+   available. Run `workout_math.py validate-ranges` and require zero errors.
 2. After each update, fetch the workout detail and confirm repetition counts,
    open-duration flags, pace percentages, description, and planned metrics.
 3. After a multi-day plan, fetch the entire range and compare it with the parsed
@@ -60,3 +66,18 @@ For mixed time/distance workouts, fixed-distance totals exclude timed or open
 steps. Planned duration should represent the whole workout when it can be
 computed or sensibly estimated; otherwise make clear that the title duration
 describes only the main set.
+
+## Fast manifest workflow
+
+Create one manifest before writing. Keep the source text, notes, date, intended
+operation, existing ID, final payload, arithmetic summary, and fingerprint in
+each item. This makes planning reviewable and prevents repeated parsing.
+
+Use `scripts/plan_csv.py` for deterministic CSV/date mapping. Add final workout
+payloads after semantic interpretation, then run the `fingerprint` command from
+`scripts/workout_math.py` on comparable normalized payloads. Skip a write only when both
+payloads contain the complete same field set. A calendar summary is not enough
+to prove that structures match.
+
+After writes, use one range fetch for broad verification. Reserve detailed
+fetches for quality workouts, errors, duplicates, and changed arithmetic.
