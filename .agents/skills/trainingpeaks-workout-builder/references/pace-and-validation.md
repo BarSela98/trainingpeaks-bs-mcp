@@ -27,6 +27,19 @@ encode `5:30/km` as `5:35–5:30/km`, not as `5:30–5:30/km`. This keeps the wa
 target achievable without asking the athlete to run faster than prescribed.
 Use 0–1% for static rest instead of 0–0%.
 
+For an existing point target, prefer deterministic repair:
+
+```bash
+workout_math.py repair-equal-ranges workout.json \
+  --metric pace --threshold 3.584229390681003 --increment 5 --output fixed.json
+```
+
+The repair must preserve the faster target boundary and add one display step
+on its slower side (`4:50` becomes `4:55–4:50`). If the original percentage
+maps to a non-displayable pace such as `4:48`, quantize it first, producing
+`4:55–4:50`. Static `0–0` becomes `0–1`. Reversed ranges are reported, not
+automatically swapped, because their intended target is ambiguous.
+
 ## Arithmetic rules
 
 Expand repetition blocks when totaling fixed distance:
@@ -56,6 +69,8 @@ cycles plus 1 minute moderate.
    available. Run `workout_math.py validate-ranges` and require zero errors.
 2. After each update, fetch the workout detail and confirm repetition counts,
    open-duration flags, pace percentages, description, and planned metrics.
+   Recursively validate the native `targets` arrays; do not validate only the
+   simplified payload that was sent.
 3. After a multi-day plan, fetch the entire range and compare it with the parsed
    source: one intended workout per non-rest cell, no unexpected duplicates,
    correct dates, English titles, and matching distances.

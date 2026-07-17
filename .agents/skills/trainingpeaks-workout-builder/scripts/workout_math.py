@@ -77,6 +77,62 @@ def equal_intensity_ranges(steps: list[dict[str, Any]], prefix: str = "steps") -
     return errors
 
 
+def repair_equal_intensity_ranges(
+    steps: list[dict[str, Any]],
+    *,
+    metric: str,
+    threshold: float,
+    increment: int,
+    prefix: str = "steps",
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Repair equal ranges in simplified or native TP steps, preserving all other fields."""
+    changes: list[dict[str, Any]] = []
+    reversed_ranges: list[str] = []
+
+    def repair_pair(container: dict[str, Any], min_key: str, max_key: str, path: str) -> None:
+        minimum = float(container[min_key])
+        maximum = float(container[max_key])
+        if minimum < maximum:
+            return
+        if minimum > maximum:
+            reversed_ranges.append(path)
+            return
+
+        before = [minimum, maximum]
+        if minimum == 0:
+            container[min_key], container[max_key] = 0, 1
+        elif metric == "pace":
+            target_seconds = 1000 / (threshold * maximum / 100)
+            display_target = quantize_slower(target_seconds, increment)
+            container[min_key] = (1000 / (display_target + increment)) / threshold * 100
+            container[max_key] = (1000 / display_target) / threshold * 100
+        else:
+            target_value = threshold * maximum / 100
+            container[min_key] = max(0, target_value - increment) / threshold * 100
+
+        changes.append({"path": path, "before": before, "after": [container[min_key], container[max_key]]})
+
+    for index, step in enumerate(steps):
+        path = f"{prefix}[{index}]"
+        if "intensity_min" in step and "intensity_max" in step:
+            repair_pair(step, "intensity_min", "intensity_max", path)
+        for target_index, target in enumerate(step.get("targets", [])):
+            if "minValue" in target and "maxValue" in target:
+                repair_pair(target, "minValue", "maxValue", f"{path}.targets[{target_index}]")
+        children = step.get("steps", [])
+        if children:
+            child_changes, child_reversed = repair_equal_intensity_ranges(
+                children,
+                metric=metric,
+                threshold=threshold,
+                increment=increment,
+                prefix=f"{path}.steps",
+            )
+            changes.extend(child_changes)
+            reversed_ranges.extend(child_reversed)
+    return changes, reversed_ranges
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
@@ -104,6 +160,13 @@ def main() -> None:
     validate_ranges = sub.add_parser("validate-ranges")
     validate_ranges.add_argument("json_file", type=Path)
 
+    repair_ranges = sub.add_parser("repair-equal-ranges")
+    repair_ranges.add_argument("json_file", type=Path)
+    repair_ranges.add_argument("--metric", choices=("pace", "power", "hr"), required=True)
+    repair_ranges.add_argument("--threshold", type=float, required=True)
+    repair_ranges.add_argument("--increment", type=int)
+    repair_ranges.add_argument("--output", type=Path)
+
     args = parser.parse_args()
     if args.command == "pace":
         seconds = quantize_slower(parse_pace(args.value), args.increment)
@@ -124,12 +187,31 @@ def main() -> None:
         left = fingerprint(json.loads(args.left.read_text()))
         right = fingerprint(json.loads(args.right.read_text()))
         print(json.dumps({"equal": left == right, "left": left, "right": right}))
-    else:
+    elif args.command == "validate-ranges":
         payload = json.loads(args.json_file.read_text())
         steps = payload.get("steps", payload.get("structure", payload))
         errors = equal_intensity_ranges(steps)
         print(json.dumps({"valid": not errors, "equal_or_reversed_ranges": errors}))
         raise SystemExit(0 if not errors else 1)
+    else:
+        payload = json.loads(args.json_file.read_text())
+        steps = payload.get("steps", payload.get("structure", payload))
+        increment = args.increment or (5 if args.metric == "pace" else 1)
+        changes, reversed_ranges = repair_equal_intensity_ranges(
+            steps,
+            metric=args.metric,
+            threshold=args.threshold,
+            increment=increment,
+        )
+        if reversed_ranges:
+            print(json.dumps({"repaired": 0, "reversed_ranges": reversed_ranges}))
+            raise SystemExit(1)
+        rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        if args.output:
+            args.output.write_text(rendered)
+            print(json.dumps({"repaired": len(changes), "changes": changes, "output": str(args.output)}))
+        else:
+            print(rendered, end="")
 
 
 if __name__ == "__main__":
