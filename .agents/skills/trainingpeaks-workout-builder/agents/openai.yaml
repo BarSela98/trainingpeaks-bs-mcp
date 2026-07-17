@@ -1,7 +1,7 @@
 interface:
   display_name: "TrainingPeaks Workout Builder"
-  short_description: "Build and validate structured TrainingPeaks workouts"
-  default_prompt: "Use $trainingpeaks-workout-builder to build or update my TrainingPeaks workouts and verify every pace, duration, and distance."
+  short_description: "Plan, batch-update, and validate TrainingPeaks workouts"
+  default_prompt: "Use $trainingpeaks-workout-builder to efficiently plan or update my TrainingPeaks workouts, skip unchanged items, and verify every pace, duration, and distance."
 
 policy:
   allow_implicit_invocation: true

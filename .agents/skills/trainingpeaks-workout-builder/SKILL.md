@@ -51,7 +51,7 @@ increment. Never leave a non-displayable pace such as `4:22` in a title while
 the structure uses 5-second targets.
 
 Use `scripts/workout_math.py` for deterministic quantization, pace-to-percent
-conversion, midpoint selection, and structure totals. Read
+conversion, midpoint selection, structure totals, and normalized fingerprints. Read
 [references/pace-and-validation.md](references/pace-and-validation.md) when a
 request includes watch increments, mixed distance/time structures, or a full
 CSV plan.
@@ -70,13 +70,15 @@ CSV plan.
 
 ## Step 3 — Fetch the target workout
 
-Use `tp_get_workouts` with the exact date, then `tp_get_workout` with the ID
-to see the existing structure before overwriting.
+For one workout, use `tp_get_workouts` with the exact date, then
+`tp_get_workout` with the ID before overwriting.
 
 For a plan import, fetch the whole date range once to map dates to existing
-workout IDs, then fetch each matched workout's details before updating. Update
-in place when exactly one planned workout matches the intended cell. Do not
-create a duplicate merely because the existing title or structure differs.
+workout IDs. Fetch full details only for fingerprint comparisons, complex
+quality-session updates, ambiguous matches, and targeted verification. A
+calendar summary cannot prove structures are equal. Update in place when one
+planned workout matches; do not create a duplicate merely because its title or
+structure differs.
 
 ## Step 4 — Build the structure
 
@@ -156,6 +158,15 @@ in the same workout. `primaryLengthMetric` is detected from the first block.
 ```
 
 `intensityClass` values: `warmUp`, `active`, `rest`, `coolDown`, `other`
+
+### Never use an equal intensity range
+
+Require `intensity_min < intensity_max` on every step. Do not create point
+targets such as `93/93`, including rest steps. When the source gives one pace,
+make a one-watch-increment band on the less intense side: a `5:30/km` target
+becomes `5:35–5:30/km`. For power or heart rate, use the smallest meaningful
+display increment below the target. Preserve the named target in the step name.
+Run `scripts/workout_math.py validate-ranges STRUCTURE.json` before writing.
 
 ### Typical intensity zones (running)
 
@@ -246,11 +257,11 @@ Multiple independent repetition blocks, each with its own distance and recovery:
 
 Use `intensityClass: "rest"` for both jog and static recovery.
 - Jog recovery = 72–82% (`intensity_min: 72, intensity_max: 82`)
-- **Static rest = 0%** (`intensity_min: 0, intensity_max: 0`) — complete stop, no movement target
+- **Static rest = 0–1%** (`intensity_min: 0, intensity_max: 1`) — effectively complete stop without an equal range
 
-**Rest between sets** (e.g. "2 דק׳ הפסקה" before the first set): standalone rest step with `duration_seconds` and **0% intensity**:
+**Rest between sets** (e.g. "2 דק׳ הפסקה" before the first set): standalone rest step with `duration_seconds` and a **0–1%** range:
 ```json
-{"name": "הפסקה", "duration_seconds": 120, "intensity_min": 0, "intensity_max": 0, "intensityClass": "rest"}
+{"name": "הפסקה", "duration_seconds": 120, "intensity_min": 0, "intensity_max": 1, "intensityClass": "rest"}
 ```
 
 #### "ריצה קלה / רכיבה נוחה" (Easy/recovery session)
@@ -388,9 +399,11 @@ code; the native format bypasses structure building entirely. See
 When the user provides a full week (or multiple days) at once:
 1. Fetch `tp_get_athlete_settings` **once** at the start, reuse the threshold for all workouts.
 2. Fetch the date range once and map existing workout IDs.
-3. Calculate pace percentages and structure arithmetic up front.
-4. Run independent create/update calls in bounded parallel batches.
-5. Collect results and report a summary table (day | title | ID).
+3. Build one manifest containing every intended payload and validation summary.
+4. Compare normalized fingerprints and remove unchanged items from the write set.
+5. Run direct independent create/update calls in bounded parallel batches; do
+   not delegate one workout per agent.
+6. Collect results and report a summary table (day | action | title | ID).
 
 ## Creating workouts from a CSV training plan
 
@@ -415,24 +428,27 @@ print(d.strftime('%A'))  # Should print 'Sunday'
 
 ### Batch workflow
 
-1. Parse the CSV in full and map each non-rest cell to an exact date.
+1. Run `scripts/plan_csv.py PLAN.csv --year YYYY` to map every non-rest cell to
+   an exact date in one pass. If existing workouts were saved as JSON, pass
+   `--existing-workouts FILE` to attach IDs and choose create/update actions.
 2. Fetch settings once and existing workouts once for the complete date range.
-3. Precompute quantized paces, percentages, repetition remainders, and fixed
-   distance totals before any write.
-4. Update existing workouts; create only dates with no intended match.
-5. Parallelize only independent cells and respect available concurrency. Reuse
-   workers in bounded waves; do not assume one worker per cell is available.
-6. After all writes, fetch the full range again and verify count, dates, titles,
+3. Fill each manifest entry with its final title, payload, structure summary,
+   and fingerprint. Precompute pace percentages and arithmetic once.
+4. Mark unchanged comparable entries as `skip`; update existing workouts and
+   create only dates with no intended match. Never skip on a partial comparison.
+5. Execute direct tool calls concurrently in bounded batches. Prefer one
+   orchestrating tool call that awaits several MCP calls when available.
+6. After all writes, fetch the full range once and verify count, dates, titles,
    distances, descriptions, and IDs. Fetch detailed workouts to verify structure
-   for quality sessions and any item whose arithmetic changed.
+   only for quality sessions, failed summaries, and items whose arithmetic changed.
 
-Treat worker success messages as provisional: the final range read is the
-source of truth. Avoid dispatching a follow-up to a worker until its previous
-turn is fully complete, since completion-message races can drop queued work.
+Treat write results as provisional; the final range read is the source of truth.
 
 ### Rest / bike days
 - **מנוחה** (rest): skip — do not create a workout.
 - **רכיבה נוחה** (easy bike): `sport='Bike'`, `duration_minutes=90`, use structure with `openDuration: true` (see easy bike pattern above).
+- **רכיבה נוחה / מנוחה**: treat as an optional choice. Reuse an existing bike
+  workout when that resolves intent; otherwise require athlete direction before creation.
 - **ריצה קלה** (easy run with pace): use explicit structure at 71–77% (see easy run pattern above).
 
 ## `tp_create_workout` function signature
@@ -466,10 +482,12 @@ tp_create_workout(
 - [ ] Used `distance_meters` for distance targets, `duration_seconds` for timed efforts
 - [ ] Passed `distance_km` alongside distance-based structures
 - [ ] Quantized every displayed pace and title midpoint before % conversion
+- [ ] Verified `intensity_min < intensity_max` for every step; no point targets
 - [ ] Expanded repetitions when calculating distance and timed-set totals
 - [ ] Made the prescribed main-set duration exact, including any remainder step
 - [ ] For easy/recovery sessions with no targets: omit `structure`, pass only `duration_minutes`
 - [ ] For multiple workouts: used bounded parallel writes without exceeding concurrency
+- [ ] Skipped unchanged items only after comparing complete normalized payloads
 - [ ] If a source table/plan exists: **verbatim** workout line plus row/week notes in `description`
 - [ ] Re-fetched the final date range and verified count, dates, IDs, titles, and planned metrics
 - [ ] Re-fetched detailed structures for quality sessions and corrected arithmetic
