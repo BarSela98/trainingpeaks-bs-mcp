@@ -2240,18 +2240,36 @@ def _remote_tool_error(code: str, message: str) -> CallToolResult:
 
 
 def _remote_safe_tool_schema(tool: Tool) -> Tool:
-    """Remove stdio-only filesystem arguments from the remote catalog."""
+    """Remove stdio-only filesystem arguments and claims from the remote catalog."""
     hidden_properties = {
         "tp_upload_workout_file": "file_path",
         "tp_download_workout_file": "output_path",
     }
+    remote_descriptions = {
+        "tp_analyze_workout": (
+            "Get workout analysis: metrics, zones, laps, and a time-series point count. "
+            "Remote mode does not save or return a server-side JSON file."
+        ),
+        "tp_upload_workout_file": (
+            "Upload a workout file (.fit, .tcx, .gpx) to an existing workout from base64-encoded bytes. "
+            "Remote mode cannot read server file paths and limits decoded files to 3 MiB."
+        ),
+        "tp_download_workout_file": (
+            "Download a workout file by file_id as base64-encoded bytes. Remote mode does not write server files "
+            "and rejects files larger than 3 MiB. Get file_id from tp_get_workout device_files/attachment_files."
+        ),
+    }
     hidden_property = hidden_properties.get(tool.name)
-    if hidden_property is None:
+    remote_description = remote_descriptions.get(tool.name)
+    if hidden_property is None and remote_description is None:
         return tool
     remote_tool = tool.model_copy(deep=True)
-    properties = remote_tool.input_schema.get("properties")
-    if isinstance(properties, dict):
-        properties.pop(hidden_property, None)
+    if hidden_property is not None:
+        properties = remote_tool.input_schema.get("properties")
+        if isinstance(properties, dict):
+            properties.pop(hidden_property, None)
+    if remote_description is not None:
+        remote_tool.description = remote_description
     return remote_tool
 
 

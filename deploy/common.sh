@@ -14,7 +14,21 @@ require_command() {
 guard_personal_gcloud_account() {
   require_command gcloud
 
-  local active_account normalized_account
+  local active_account normalized_account override property
+
+  # These inputs make gcloud ignore or impersonate the selected account. Check
+  # them before `gcloud auth list`, otherwise that command can still report the
+  # expected personal account while subsequent API calls use other credentials.
+  [[ -z "${CLOUDSDK_AUTH_ACCESS_TOKEN:-}" ]] || die \
+    "Refusing CLOUDSDK_AUTH_ACCESS_TOKEN. Use the selected personal gcloud account directly."
+  for property in impersonate_service_account credential_file_override access_token_file; do
+    if ! override="$(gcloud config get-value "auth/${property}" 2>/dev/null)"; then
+      die "Could not inspect gcloud auth/${property}; refusing to continue."
+    fi
+    [[ -z "$override" ]] || die \
+      "Refusing gcloud auth/${property} override. Use the selected personal account directly."
+  done
+
   if ! active_account="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null | head -n 1)"; then
     die "Could not read gcloud credentials. Check that your gcloud configuration is writable."
   fi
@@ -41,7 +55,8 @@ guard_personal_gcloud_account() {
 validate_deploy_settings() {
   [[ "$PROJECT_ID" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || die "Invalid PROJECT_ID: ${PROJECT_ID}"
   [[ "$REGION" =~ ^[a-z]+-[a-z]+[0-9]+$ ]] || die "Invalid REGION: ${REGION}"
-  [[ "$SERVICE" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || die "Invalid SERVICE: ${SERVICE}"
+  [[ ${#SERVICE} -le 49 && "$SERVICE" =~ ^[a-z]([a-z0-9-]*[a-z0-9])?$ ]] || die \
+    "Invalid SERVICE (must be at most 49 characters and end with an alphanumeric): ${SERVICE}"
   [[ "$ARTIFACT_REPOSITORY" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || die \
     "Invalid ARTIFACT_REPOSITORY: ${ARTIFACT_REPOSITORY}"
 }

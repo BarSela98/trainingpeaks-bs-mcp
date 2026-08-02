@@ -28,7 +28,7 @@ from tp_mcp.client.context import (
 from tp_mcp.cloud.config import DEFAULT_SCOPES, CloudConfig
 from tp_mcp.cloud.crypto import CloudKMSCipher, RecordCipher
 from tp_mcp.cloud.middleware import RequestGuardMiddleware
-from tp_mcp.cloud.oauth import FirestoreOAuthProvider, GoogleIdentityProvider
+from tp_mcp.cloud.oauth import REFRESH_TOKEN_TTL_SECONDS, FirestoreOAuthProvider, GoogleIdentityProvider
 from tp_mcp.cloud.storage import (
     TRAININGPEAKS_IDENTITIES,
     CloudStore,
@@ -359,6 +359,7 @@ def create_http_app(
         required_scopes=["trainingpeaks:read"],
         client_registration_options=ClientRegistrationOptions(
             enabled=True,
+            client_secret_expiry_seconds=REFRESH_TOKEN_TTL_SECONDS,
             valid_scopes=list(DEFAULT_SCOPES),
             default_scopes=["trainingpeaks:read"],
         ),

@@ -93,3 +93,14 @@ class TestRealRegistrations:
             uri = ((t.meta or {}).get("ui") or {}).get("resourceUri")
             if uri:
                 assert uri in apps.APPS, f"{t.name} stamped with unregistered {uri}"
+
+    def test_workout_structure_app_keeps_distance_steps(self):
+        html = apps.load_html("workout_structure.html")
+
+        assert 'SUPPORTED_LENGTH_UNITS = new Set(["second", "meter", "mile"])' in html
+        assert "SUPPORTED_LENGTH_UNITS.has(unit)" in html
+        assert "lengthValue: value" in html
+        assert "lengthUnit: unit" in html
+        assert "primaryLengthMetric" in html
+        assert "Mixed distance / duration" in html
+        assert "formatStepLength(step)" in html

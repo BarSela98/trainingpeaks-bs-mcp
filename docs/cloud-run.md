@@ -11,8 +11,10 @@ must carry the current `Production_tpAuth` value in the
 `X-TrainingPeaks-Auth` header.
 
 The scripts deliberately refuse an active `@ridewithvia.com` account. They also
-require you to name the personal account in `GCLOUD_ACCOUNT`; this prevents an
-old gcloud configuration from silently deploying into the wrong account.
+require you to name the personal account in `GCLOUD_ACCOUNT` and reject gcloud
+service-account impersonation, credential-file overrides, and access-token
+overrides; this prevents an old gcloud configuration from silently deploying
+into the wrong account.
 
 ## Prerequisites
 
@@ -85,6 +87,9 @@ export PROJECT_ID=trainingpeaks-bs-mcp1
 
 The bootstrap revision is intentionally not a usable MCP. It only reserves the
 permanent Cloud Run URL needed to configure the Google OAuth redirect URI.
+Bootstrap is a one-time operation: if that Cloud Run service already exists,
+the script stops instead of replacing any existing revision. Use the regular
+deployment workflow for every later release.
 
 ## 2. Configure Google OAuth
 
@@ -153,6 +158,15 @@ settings:
 `PORT` is assigned by Cloud Run. The image runs as Linux UID/GID `10001` and
 starts `tp-mcp serve-http`, which listens on `0.0.0.0:$PORT`.
 
+The script first deploys the new revision with the `candidate` tag and zero
+traffic. It checks health and OAuth metadata, dynamically registers a temporary
+smoke-test client, starts a PKCE read-only authorization request, and verifies
+the unauthenticated MCP Bearer challenge. This exercises Firestore and KMS as
+well as the public routes; the temporary registration and authorization records
+are TTL-bound. Only after every check passes does the script move 100% of
+traffic to that exact revision. If a check fails, the candidate remains at zero
+traffic and the currently serving revision is unchanged.
+
 ## 5. Invite athletes
 
 The application admin commands use Application Default Credentials. Authenticate
@@ -176,11 +190,18 @@ Use the guarded wrapper so every write targets the selected personal project:
 ./deploy/admin.sh invite athlete@example.com
 ./deploy/admin.sh list
 ./deploy/admin.sh revoke athlete@example.com
+./deploy/admin.sh disconnect athlete@example.com
 ```
 
 `revoke` removes allowlist access and immediately blocks existing MCP OAuth
 tokens. Google OAuth testing users and the Firestore application allowlist are
 separate controls; an athlete must be present in both.
+
+`disconnect` keeps the invitation active, revokes every existing MCP grant,
+and removes the non-secret TrainingPeaks athlete binding. Use it when an
+athlete accidentally supplied a cookie for the wrong TrainingPeaks account;
+their next OAuth connection can bind the correct account. No TrainingPeaks
+cookie is deleted because the remote service never stores one.
 
 During connection, Google confirms the athlete's identity first. The service
 then shows its own confirmation page listing the exact TrainingPeaks permissions
@@ -205,12 +226,22 @@ history, URL, query string, or ordinary environment file. If the client cannot
 securely inject a custom header for every request, use the local stdio server
 instead of the remote endpoint.
 
+Dynamic Client Registration accepts the exact Claude MCP callback and HTTP
+loopback callbacks (`localhost`, `127.0.0.1`, or `::1`) only. Since the built-in
+Claude remote connector cannot inject the required TrainingPeaks header, a
+practical third-party client must support both secure custom headers and a
+loopback OAuth callback. Arbitrary HTTPS callback domains are rejected unless
+you explicitly extend the server's redirect policy and review that trust
+boundary. Dynamically issued client secrets have a fixed 30-day lifetime,
+reported in the registration response; re-register the client when it expires.
+
 Anthropic's documented remote custom-connector setup currently accepts a
 server URL and optional OAuth client credentials, but does not document a way
 to attach an arbitrary per-request secret header. Consequently, the built-in
 Claude.ai/Claude Desktop remote connector is not supported by this stateless
-deployment today. Use a Streamable HTTP MCP client that has a secure custom
-header facility, or keep Claude Desktop on local stdio. See [Anthropic's remote
+deployment today. Use a compatible Streamable HTTP MCP client with secure
+custom headers and a loopback OAuth callback, or keep Claude Desktop on local
+stdio. See [Anthropic's remote
 connector documentation](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp).
 
 MCP OAuth is separate from TrainingPeaks authentication. After Google sign-in,

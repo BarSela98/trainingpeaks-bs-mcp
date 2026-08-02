@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from tp_mcp.cloud.admin import _verify_personal_adc, build_parser, invite, revoke
+from tp_mcp.cloud.admin import _verify_personal_adc, build_parser, disconnect, invite, revoke
 from tp_mcp.cloud.oauth import GoogleIdentity, email_key
 from tp_mcp.cloud.storage import (
     ALLOWLIST,
@@ -19,6 +19,7 @@ from tp_mcp.cloud.storage import (
     OAUTH_GRANTS,
     OAUTH_REFRESH_TOKENS,
     OAUTH_TRANSACTIONS,
+    TRAININGPEAKS_IDENTITIES,
 )
 
 
@@ -57,11 +58,40 @@ async def test_revoke_tombstones_grants_and_cleans_pending_subject_flows(store, 
         assert await store.query(collection, "subject", subject) == []
 
 
-def test_admin_cli_has_no_credential_disconnect_command() -> None:
+@pytest.mark.asyncio
+async def test_disconnect_revokes_grants_and_resets_trainingpeaks_binding(store, provider) -> None:
+    email = "athlete@example.com"
+    subject = "google-subject-1"
+    await invite(store, email)
+    assert await provider.bind_invited_identity(GoogleIdentity(subject=subject, email=email))
+    await store.put(
+        TRAININGPEAKS_IDENTITIES,
+        subject,
+        {"athlete_id": "111", "email": "athlete@example.com"},
+    )
+    await store.put(OAUTH_GRANTS, "grant-1", {"subject": subject, "expires_at": 9_999_999_999})
+    await store.put(
+        OAUTH_ACCESS_TOKENS,
+        "access-1",
+        {"grant_id": "grant-1", "subject": subject},
+    )
+
+    await disconnect(store, email)
+
+    assert await store.get(TRAININGPEAKS_IDENTITIES, subject) is None
+    assert await provider.subject_is_allowed(subject)
+    grant = await store.get(OAUTH_GRANTS, "grant-1")
+    assert grant is not None and isinstance(grant.get("revoked_at"), float)
+    assert await store.get(OAUTH_ACCESS_TOKENS, "access-1") is None
+
+
+def test_admin_cli_accepts_disconnect_command() -> None:
     parser = build_parser()
 
-    with pytest.raises(SystemExit):
-        parser.parse_args(["--project", "test-project", "disconnect", "athlete@example.com"])
+    args = parser.parse_args(["--project", "test-project", "disconnect", "athlete@example.com"])
+
+    assert args.command == "disconnect"
+    assert args.email == "athlete@example.com"
 
 
 def test_admin_adc_guard_requires_matching_personal_account_and_project(tmp_path, monkeypatch) -> None:

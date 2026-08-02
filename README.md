@@ -28,6 +28,48 @@ Ask your AI assistant things like:
 - "Set my FTP to 310 and update my power zones"
 - "Add a calendar note for next Monday: rest day, travel"
 
+## Architecture
+
+The same MCP tools, resources, and inline apps are available through the local
+stdio server and the optional stateless Cloud Run transport. Their credential
+boundaries are intentionally different:
+
+```mermaid
+flowchart LR
+    subgraph Local["Local stdio mode"]
+        LC["Claude Desktop or another MCP client"]
+        LS["tp-mcp serve<br/>MCP tools, resources, and apps"]
+        KS[("OS keyring or encrypted file")]
+        LC -->|"stdio"| LS
+        KS -->|"stored cookie"| LS
+    end
+
+    subgraph Remote["Remote Cloud Run mode"]
+        RC["Remote MCP client<br/>with secure header injection"]
+        CR["Cloud Run: tp-mcp serve-http<br/>stateless /mcp"]
+        GO["Google OIDC<br/>invite-only identity"]
+        FS[("Firestore<br/>allowlist, identity binding,<br/>hashed OAuth records")]
+        KMS["Cloud KMS<br/>OAuth client secrets and state"]
+        SM["Secret Manager<br/>Google OAuth client secret"]
+
+        RC -->|"OAuth bearer + X-TrainingPeaks-Auth"| CR
+        CR <--> GO
+        CR <--> FS
+        CR <--> KMS
+        SM --> CR
+    end
+
+    TP["TrainingPeaks APIs"]
+    LS -->|"cookie exchange, then bearer API calls"| TP
+    CR -->|"validate and exchange cookie<br/>inside one request"| TP
+```
+
+In remote mode the TrainingPeaks cookie exists only in the active request
+context. Firestore never receives it: durable cloud state is limited to the
+invite/Google identity, the non-secret TrainingPeaks athlete binding, and
+hashed OAuth records. Cloud KMS protects the OAuth values that must be
+recoverable.
+
 ## Tools (84)
 
 ### Workouts
@@ -319,10 +361,14 @@ lists the requested read/write TrainingPeaks scopes before an MCP authorization
 code is issued.
 
 Only use a client that can source this custom header from an OS keychain or
-non-exporting secret provider. Do not put the cookie in a committed client
-configuration, URL, shell history, or ordinary environment file. See the
-[Cloud Run deployment guide](docs/cloud-run.md) for project bootstrap, OAuth,
-allowlist, deployment, and client configuration.
+non-exporting secret provider and complete OAuth through an HTTP loopback
+callback. Dynamic registration deliberately rejects arbitrary HTTPS callback
+domains. Do not put the cookie in a committed client configuration, URL, shell
+history, or ordinary environment file. Administrators can disconnect an
+athlete to revoke every grant and reset an accidental TrainingPeaks identity
+binding without removing the invitation. See the [Cloud Run deployment
+guide](docs/cloud-run.md) for project bootstrap, OAuth, allowlist, deployment,
+and client configuration.
 
 > **Claude compatibility:** Anthropic's documented remote custom-connector UI
 > accepts a server URL and OAuth client credentials, but does not currently
@@ -448,10 +494,12 @@ Example with a planned start time:
 
 ## Security
 
-**TL;DR:** Local stdio mode encrypts the cookie on disk and opens no network
-port. Remote Cloud Run mode receives the cookie in `X-TrainingPeaks-Auth` over
-HTTPS on every MCP request but never persists, logs, or caches it across
-requests. Neither mode returns the cookie to the language model.
+**TL;DR:** By default, local stdio mode uses the OS credential store or an
+encrypted-file fallback; headless installations can inject the cookie through
+the process environment. It opens no network port. Remote Cloud Run mode
+receives the cookie in `X-TrainingPeaks-Auth` over HTTPS on every MCP request
+but never persists, logs, or caches it across requests. Neither mode returns
+the cookie to the language model.
 
 This server is designed with defence-in-depth. Your TrainingPeaks session cookie is sensitive - it grants access to your training data - so we treat it accordingly.
 
@@ -480,9 +528,9 @@ the secret so it can add `X-TrainingPeaks-Auth`; configure that header through
 the client's secret facility, not through a prompt. Multiple server-side layers
 prevent disclosure:
 
-1. **Return value sanitisation**: Tool results are scrubbed for any keys containing `cookie`, `token`, `auth`, `credential`, `password`, or `secret` before being sent to Claude
+1. **Refresh-tool sanitisation**: `tp_refresh_auth` never returns the cookie and removes sensitive-looking keys from its result before it is sent to the MCP client
 2. **Masked repr()**: The `BrowserCookieResult` and `CredentialResult` classes override `__repr__` to show `cookie=<present>` instead of the actual value
-3. **Sanitised exceptions**: Error messages use only exception type names, never full messages that could contain data
+3. **Credential-error sanitisation**: TrainingPeaks credential validation and exchange return generic network errors, and remote middleware never logs exception text that could echo the request header
 4. **No logging**: Cookie values are never written to any log
 
 ### Local Browser Domain Hardcoding (Cannot Be Changed)

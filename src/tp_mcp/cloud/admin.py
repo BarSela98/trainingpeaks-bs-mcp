@@ -21,6 +21,7 @@ from tp_mcp.cloud.storage import (
     OAUTH_GRANTS,
     OAUTH_REFRESH_TOKENS,
     OAUTH_TRANSACTIONS,
+    TRAININGPEAKS_IDENTITIES,
     CloudStore,
     FirestoreCloudStore,
     ttl_timestamp,
@@ -151,6 +152,28 @@ async def revoke(store: CloudStore, email_value: str) -> None:
     print(f"Revoked {email}; invalidated {revoked_tokens} OAuth and pending-flow record(s)")
 
 
+async def disconnect(store: CloudStore, email_value: str) -> None:
+    """Reset an athlete's TrainingPeaks binding and revoke every MCP grant.
+
+    Remote TrainingPeaks cookies are request-scoped and therefore require no
+    durable credential deletion. Removing the non-secret identity binding lets
+    an invited user recover from selecting the wrong TrainingPeaks account on
+    their first request. The Google subject remains pinned to the invitation.
+    """
+    email = _normalize_email(email_value)
+    identifier = email_key(email)
+    current = await store.get(ALLOWLIST, identifier)
+    if current is None:
+        raise ValueError(f"No invitation exists for {email}")
+    subject = current.get("subject")
+    if not isinstance(subject, str):
+        raise ValueError(f"No Google identity is bound for {email}")
+
+    revoked_tokens = await _revoke_subject_tokens(store, subject)
+    await store.delete(TRAININGPEAKS_IDENTITIES, subject)
+    print(f"Disconnected {email}; reset TrainingPeaks identity and invalidated {revoked_tokens} record(s)")
+
+
 async def list_invites(store: CloudStore) -> None:
     records = await store.scan(ALLOWLIST)
     if not records:
@@ -173,6 +196,8 @@ async def run(args: argparse.Namespace, store: CloudStore | None = None) -> int:
         await invite(cloud_store, args.email)
     elif args.command == "revoke":
         await revoke(cloud_store, args.email)
+    elif args.command == "disconnect":
+        await disconnect(cloud_store, args.email)
     else:
         await list_invites(cloud_store)
     return 0
@@ -184,7 +209,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--database", default=os.environ.get("TP_MCP_FIRESTORE_DATABASE", "(default)"))
     parser.add_argument("--expected-account", default=os.environ.get("GCLOUD_ACCOUNT"))
     commands = parser.add_subparsers(dest="command", required=True)
-    for command in ("invite", "revoke"):
+    for command in ("invite", "revoke", "disconnect"):
         subcommand = commands.add_parser(command)
         subcommand.add_argument("email")
     commands.add_parser("list")

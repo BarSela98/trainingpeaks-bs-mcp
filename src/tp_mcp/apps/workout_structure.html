@@ -63,7 +63,33 @@ function el(name, attrs) {
   return n;
 }
 function fmt(x, dp) { return (x == null || isNaN(x)) ? "-" : Number(x).toFixed(dp == null ? 0 : dp); }
-function mins(sec) { return Math.round(sec / 60) + "min"; }
+const SUPPORTED_LENGTH_UNITS = new Set(["second", "meter", "mile"]);
+const METERS_PER_MILE = 1609.344;
+
+function formatDuration(sec) {
+  const rounded = Math.round(sec);
+  if (rounded < 60) return rounded + "s";
+  if (rounded % 60 === 0) return (rounded / 60) + "min";
+  return Math.floor(rounded / 60) + "m " + (rounded % 60) + "s";
+}
+
+function formatDistance(value, unit) {
+  if (unit === "mile") {
+    const dp = value < 10 ? 2 : 1;
+    return fmt(value, dp).replace(/\.0+$/, "") + " mi";
+  }
+  if (value >= 1000) {
+    const km = value / 1000;
+    return fmt(km, km < 10 ? 2 : 1).replace(/\.0+$/, "") + " km";
+  }
+  return fmt(value) + " m";
+}
+
+function formatStepLength(step) {
+  return step.lengthUnit === "second"
+    ? formatDuration(step.lengthValue)
+    : formatDistance(step.lengthValue, step.lengthUnit);
+}
 
 function extractPayload(data) {
   try {
@@ -86,19 +112,79 @@ function flattenSteps(sw) {
       ? Math.max(1, Number(b.length.value) || 1) : 1;
     for (let r = 0; r < reps; r++) {
       for (const s of inner) {
-        const dur = (s.length && s.length.unit === "second") ? Number(s.length.value) || 0 : 0;
+        const unit = s.length && s.length.unit;
+        const value = Number(s.length && s.length.value);
+        if (!SUPPORTED_LENGTH_UNITS.has(unit) || !Number.isFinite(value) || value <= 0) continue;
         const t = (Array.isArray(s.targets) && s.targets[0]) ? s.targets[0] : {};
+        const rawLo = Number(t.minValue), rawHi = Number(t.maxValue);
+        const lo = Number.isFinite(rawLo) ? rawLo : (Number.isFinite(rawHi) ? rawHi : 0);
+        const hi = Number.isFinite(rawHi) ? rawHi : lo;
         out.push({
           name: typeof s.name === "string" ? s.name : "",
-          dur: dur,
-          lo: Number(t.minValue) || 0,
-          hi: Number(t.maxValue) || 0,
+          lengthValue: value,
+          lengthUnit: unit,
+          lo: lo,
+          hi: hi,
           cls: typeof s.intensityClass === "string" ? s.intensityClass : "active",
         });
       }
     }
   }
-  return out.filter(s => s.dur > 0);
+  return out;
+}
+
+function lengthKind(unit) { return unit === "second" ? "duration" : "distance"; }
+
+function distanceIn(value, fromUnit, toUnit) {
+  if (fromUnit === toUnit) return value;
+  return toUnit === "mile" ? value / METERS_PER_MILE : value * METERS_PER_MILE;
+}
+
+function primaryLengthKind(sw, steps) {
+  const declared = sw && typeof sw.primaryLengthMetric === "string"
+    ? sw.primaryLengthMetric.toLowerCase() : "";
+  if ((declared === "duration" || declared === "distance")
+      && steps.some(s => lengthKind(s.lengthUnit) === declared)) return declared;
+  return lengthKind(steps[0].lengthUnit);
+}
+
+function chartScale(sw, steps) {
+  const kinds = new Set(steps.map(s => lengthKind(s.lengthUnit)));
+  const primaryKind = primaryLengthKind(sw, steps);
+  if (kinds.size > 1) {
+    // Seconds and distance cannot be converted without knowing pace. Equal-width
+    // slots keep every step visible without implying a false conversion.
+    return {
+      label: "Mixed distance / duration · " + primaryKind + " primary",
+      weight: () => 1,
+    };
+  }
+  if (primaryKind === "duration") {
+    const total = steps.reduce((sum, s) => sum + s.lengthValue, 0);
+    return {
+      label: "Duration · " + formatDuration(total),
+      weight: s => s.lengthValue,
+    };
+  }
+  const unit = steps.every(s => s.lengthUnit === "mile") ? "mile" : "meter";
+  const total = steps.reduce((sum, s) => sum + distanceIn(s.lengthValue, s.lengthUnit, unit), 0);
+  return {
+    label: "Distance · " + formatDistance(total, unit),
+    weight: s => distanceIn(s.lengthValue, s.lengthUnit, unit),
+  };
+}
+
+function intensityLabels(sw) {
+  const metric = sw && sw.primaryIntensityMetric;
+  if (metric === "percentOfFtp") return { reference: "FTP", suffix: "% FTP" };
+  if (metric === "percentOfThresholdHr") return { reference: "Threshold HR", suffix: "% threshold HR" };
+  if (metric === "percentOfThresholdPace") return { reference: "Threshold pace", suffix: "% threshold pace" };
+  return { reference: "100%", suffix: "%" };
+}
+
+function tooltipText(step, intensity) {
+  const target = step.lo === step.hi ? fmt(step.lo) : fmt(step.lo) + "-" + fmt(step.hi);
+  return (step.name || step.cls) + "\n" + formatStepLength(step) + " @ " + target + intensity.suffix;
 }
 
 function colourFor(step) {
@@ -109,49 +195,59 @@ function colourFor(step) {
   return step.hi >= 100 ? "var(--hard)" : "var(--active)";
 }
 
-function renderProfile(steps) {
+function renderProfile(steps, sw) {
   $("chartbox").hidden = false;
   const svg = $("chart");
   while (svg.firstChild) svg.removeChild(svg.firstChild);
-  const W = 720, H = 170, padB = 16, padT = 6;
-  const total = steps.reduce((a, s) => a + s.dur, 0) || 1;
+  const W = 720, H = 170, padB = 18, padT = 6;
+  const scale = chartScale(sw, steps);
+  const weights = steps.map(scale.weight);
+  const total = weights.reduce((a, value) => a + value, 0) || 1;
   const maxI = Math.max(110, ...steps.map(s => s.hi)) * 1.05;
-  // FTP reference line at 100%
+  const intensity = intensityLabels(sw);
+  // Threshold reference line at 100% of the workout's primary intensity metric.
   const yFtp = padT + (1 - 100 / maxI) * (H - padT - padB);
   svg.appendChild(el("line", { x1: 0, x2: W, y1: yFtp, y2: yFtp,
     stroke: "var(--muted)", "stroke-width": 1, "stroke-dasharray": "4,3" }));
   const ftpLabel = el("text", { x: W - 4, y: yFtp - 3, fill: "var(--muted)",
     "font-size": 9, "text-anchor": "end" });
-  ftpLabel.textContent = "FTP";
+  ftpLabel.textContent = intensity.reference;
   svg.appendChild(ftpLabel);
+
+  const scaleLabel = el("text", { x: 4, y: H - 3, fill: "var(--muted)", "font-size": 9 });
+  scaleLabel.textContent = scale.label;
+  svg.appendChild(scaleLabel);
 
   let t = 0;
   const rects = [];
-  for (const s of steps) {
-    const x = (t / total) * W, w = Math.max(1.5, (s.dur / total) * W - 1);
+  for (let index = 0; index < steps.length; index++) {
+    const s = steps[index], stepWeight = weights[index];
+    const x = (t / total) * W, w = Math.max(1.5, (stepWeight / total) * W - 1);
     const mid = (s.lo + s.hi) / 2 || 1;
     const h = Math.max(3, (mid / maxI) * (H - padT - padB));
     const rect = el("rect", { x: x, y: H - padB - h, width: w, height: h,
-      fill: colourFor(s), rx: 1.5 });
+      fill: colourFor(s), rx: 1.5, "aria-label": tooltipText(s, intensity) });
+    const title = el("title", {});
+    title.textContent = tooltipText(s, intensity);
+    rect.appendChild(title);
     svg.appendChild(rect);
     rects.push([x, x + w, s]);
-    t += s.dur;
+    t += stepWeight;
   }
   const tip = $("tip"), box = $("chartbox");
-  svg.addEventListener("mousemove", (ev) => {
+  svg.onmousemove = (ev) => {
     const r = svg.getBoundingClientRect();
     const fx = (ev.clientX - r.left) / r.width * W;
     const hit = rects.find(([a, b2]) => fx >= a && fx <= b2);
     if (!hit) { tip.style.display = "none"; return; }
     const s = hit[2];
-    tip.textContent = (s.name || s.cls) + "\n" + mins(s.dur) + " @ "
-      + fmt(s.lo) + "-" + fmt(s.hi) + "%";
+    tip.textContent = tooltipText(s, intensity);
     tip.style.display = "block";
     const bx = box.getBoundingClientRect();
     tip.style.left = Math.min(ev.clientX - bx.left + 12, bx.width - 120) + "px";
     tip.style.top = (ev.clientY - bx.top + 10) + "px";
-  });
-  svg.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+  };
+  svg.onmouseleave = () => { tip.style.display = "none"; };
 }
 
 function addTile(v, l) {
@@ -178,7 +274,7 @@ function render(p) {
 
   const steps = flattenSteps(p.structured_workout);
   if (steps.length > 0) {
-    renderProfile(steps);
+    renderProfile(steps, p.structured_workout);
   } else {
     $("chartbox").hidden = true;  // unstructured: summary fields only
   }

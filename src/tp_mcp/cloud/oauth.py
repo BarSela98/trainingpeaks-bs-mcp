@@ -48,7 +48,10 @@ CONSENT_TTL_SECONDS = 10 * 60
 AUTHORIZATION_CODE_TTL_SECONDS = 5 * 60
 ACCESS_TOKEN_TTL_SECONDS = 60 * 60
 REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
-DYNAMIC_CLIENT_TTL_SECONDS = 7 * 24 * 60 * 60
+# A dynamically registered confidential client must remain usable for the
+# full lifetime of the refresh token issued to it.  This is also the lifetime
+# advertised by the registration endpoint.
+DYNAMIC_CLIENT_TTL_SECONDS = REFRESH_TOKEN_TTL_SECONDS
 GOOGLE_AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 CLAUDE_CALLBACK = "https://claude.ai/api/mcp/auth_callback"
@@ -193,13 +196,6 @@ class FirestoreOAuthProvider(
         if float(document.get("expires_at", 0)) <= now:
             await self.store.delete(OAUTH_CLIENTS, client_id)
             return None
-        renewed_expiry = now + DYNAMIC_CLIENT_TTL_SECONDS
-        await self.store.put(
-            OAUTH_CLIENTS,
-            client_id,
-            {"expires_at": renewed_expiry, "expires_at_timestamp": ttl_timestamp(renewed_expiry)},
-            merge=True,
-        )
         metadata = dict(document.get("metadata") or {})
         encrypted_secret = document.get("client_secret_ciphertext")
         if isinstance(encrypted_secret, str):
@@ -219,7 +215,12 @@ class FirestoreOAuthProvider(
         metadata = client_info.model_dump(mode="json")
         client_secret = metadata.pop("client_secret", None)
         now = time.time()
-        expires_at = now + DYNAMIC_CLIENT_TTL_SECONDS
+        advertised_secret_expiry = client_info.client_secret_expires_at
+        expires_at = (
+            float(advertised_secret_expiry)
+            if client_secret and advertised_secret_expiry and advertised_secret_expiry > now
+            else now + DYNAMIC_CLIENT_TTL_SECONDS
+        )
         document: Document = {
             "metadata": metadata,
             "created_at": now,
@@ -237,11 +238,18 @@ class FirestoreOAuthProvider(
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
         if params.resource and params.resource.rstrip("/") != self.config.resource_url:
             raise AuthorizeError(error="invalid_target", error_description="Unknown MCP resource")
-        scopes = params.scopes or ["trainingpeaks:read"]
-        if "trainingpeaks:write" in scopes and "trainingpeaks:read" not in scopes:
-            scopes = ["trainingpeaks:read", *scopes]
-        if not set(scopes).issubset(DEFAULT_SCOPES):
+        scopes = ["trainingpeaks:read"] if params.scopes is None else list(params.scopes)
+        requested_scopes = set(scopes)
+        if not requested_scopes.issubset(DEFAULT_SCOPES):
             raise AuthorizeError(error="invalid_scope", error_description="Unsupported scope")
+        registered_scopes = set((client.scope or "").split())
+        if not requested_scopes.issubset(registered_scopes):
+            raise AuthorizeError(error="invalid_scope", error_description="Scope was not registered for this client")
+        if "trainingpeaks:write" in requested_scopes and "trainingpeaks:read" not in requested_scopes:
+            raise AuthorizeError(
+                error="invalid_scope",
+                error_description="trainingpeaks:write requires trainingpeaks:read",
+            )
 
         state = opaque_token("tps")
         nonce = opaque_token("tpn")

@@ -75,12 +75,21 @@ async def test_authenticated_http_initialize_catalogs_and_offline_tool(
         )
         tools = _rpc(client, tokens.access_token, "tools/list", {}, request_id=2)
         resources = _rpc(client, tokens.access_token, "resources/list", {}, request_id=3)
+        fitness_tool = next(tool for tool in tools["tools"] if tool["name"] == "tp_get_fitness")
+        app_resource_uri = fitness_tool["_meta"]["ui"]["resourceUri"]
+        app_resource = _rpc(
+            client,
+            tokens.access_token,
+            "resources/read",
+            {"uri": app_resource_uri},
+            request_id=4,
+        )
         called = _rpc(
             client,
             tokens.access_token,
             "tools/call",
             {"name": "tp_search_exercises", "arguments": {"query": "squat", "limit": 1}},
-            request_id=4,
+            request_id=5,
         )
 
     assert initialized["protocolVersion"]
@@ -90,9 +99,12 @@ async def test_authenticated_http_initialize_catalogs_and_offline_tool(
     assert "tp_refresh_auth" not in tool_names
     assert "tp_create_workout" not in tool_names
     assert resources["resources"]
+    assert app_resource_uri in {resource["uri"] for resource in resources["resources"]}
+    assert app_resource["contents"][0]["mimeType"] == "text/html;profile=mcp-app"
+    assert "<!doctype html>" in app_resource["contents"][0]["text"].lower()
     assert called["isError"] is False
     assert called["content"]
-    assert validated_cookies == [REQUEST_COOKIE] * 4
+    assert validated_cookies == [REQUEST_COOKIE] * 5
     binding = await store.get(TRAININGPEAKS_IDENTITIES, "google-subject-1")
     assert binding is not None
     assert binding["athlete_id"] == "12345"

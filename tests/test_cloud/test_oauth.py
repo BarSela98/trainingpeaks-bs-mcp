@@ -8,7 +8,13 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 import pytest
 from mcp.server.auth.middleware.bearer_auth import BearerAuthBackend
-from mcp.server.auth.provider import AuthorizationParams, ProviderTokenVerifier, RegistrationError, TokenError
+from mcp.server.auth.provider import (
+    AuthorizationParams,
+    AuthorizeError,
+    ProviderTokenVerifier,
+    RegistrationError,
+    TokenError,
+)
 from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyUrl
 from starlette.requests import HTTPConnection
@@ -21,6 +27,7 @@ from tp_mcp.cloud.storage import (
     OAUTH_CODES,
     OAUTH_GRANTS,
     OAUTH_REFRESH_TOKENS,
+    OAUTH_TRANSACTIONS,
     TRAININGPEAKS_IDENTITIES,
     USERS,
 )
@@ -43,6 +50,82 @@ async def test_dynamic_client_registration_encrypts_client_secret(provider, stor
     assert loaded is not None
     assert loaded.client_secret == "client-secret-value"
     assert [str(uri) for uri in loaded.redirect_uris or []] == [TEST_CALLBACK]
+    loaded_document = await store.get(OAUTH_CLIENTS, oauth_client.client_id)
+    assert loaded_document is not None
+    assert loaded_document["expires_at"] == document["expires_at"]
+    assert loaded_document["expires_at_timestamp"] == document["expires_at_timestamp"]
+
+
+@pytest.mark.asyncio
+async def test_dynamic_registration_advertises_and_stores_fixed_refresh_lifetime(
+    cloud_config,
+    store,
+    cipher,
+) -> None:
+    app = create_http_app(cloud_config, store=store, cipher=cipher)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url=cloud_config.base_url,
+    ) as client:
+        response = await client.post(
+            "/register",
+            json={
+                "client_name": "Lifetime test client",
+                "redirect_uris": [TEST_CALLBACK],
+                "scope": "trainingpeaks:read",
+            },
+        )
+
+    assert response.status_code == 201
+    registration = response.json()
+    advertised_expiry = registration["client_secret_expires_at"]
+    assert advertised_expiry == registration["client_id_issued_at"] + REFRESH_TOKEN_TTL_SECONDS
+    document = await store.get(OAUTH_CLIENTS, registration["client_id"])
+    assert document is not None
+    assert document["expires_at"] == advertised_expiry
+    assert document["expires_at_timestamp"].timestamp() == advertised_expiry
+
+
+@pytest.mark.asyncio
+async def test_deploy_smoke_registration_can_begin_http_authorization(cloud_config, store, cipher) -> None:
+    app = create_http_app(cloud_config, store=store, cipher=cipher)
+    redirect_uri = "http://127.0.0.1/callback"
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url=cloud_config.base_url,
+        follow_redirects=False,
+    ) as client:
+        registration = await client.post(
+            "/register",
+            json={
+                "client_name": "deploy-smoke-test",
+                "redirect_uris": [redirect_uri],
+                "grant_types": ["authorization_code"],
+                "response_types": ["code"],
+                "token_endpoint_auth_method": "client_secret_post",
+                "scope": "trainingpeaks:read",
+            },
+        )
+        assert registration.status_code == 201
+        authorization = await client.get(
+            "/authorize",
+            params={
+                "response_type": "code",
+                "client_id": registration.json()["client_id"],
+                "redirect_uri": redirect_uri,
+                "scope": "trainingpeaks:read",
+                "state": "deploy-smoke-test",
+                "code_challenge": "A" * 43,
+                "code_challenge_method": "S256",
+                "resource": TEST_RESOURCE_URL,
+            },
+        )
+
+    assert authorization.status_code == 302
+    assert authorization.headers["location"].startswith("https://accounts.google.com/o/oauth2/v2/auth?")
+    assert len(await store.scan(OAUTH_TRANSACTIONS)) == 1
 
 
 @pytest.mark.asyncio
@@ -79,6 +162,60 @@ async def test_dynamic_client_registration_allows_claude_and_loopback(provider, 
     await provider.register_client(client)
 
     assert await provider.get_client(client.client_id) is not None
+
+
+def _authorization_params(scopes: list[str] | None) -> AuthorizationParams:
+    return AuthorizationParams(
+        state="client-state",
+        scopes=scopes,
+        code_challenge="S" * 43,
+        redirect_uri=AnyUrl(TEST_CALLBACK),
+        redirect_uri_provided_explicitly=True,
+        resource=TEST_RESOURCE_URL,
+    )
+
+
+@pytest.mark.asyncio
+async def test_authorize_rejects_write_scope_without_read(provider, store, oauth_client) -> None:
+    await provider.register_client(oauth_client)
+
+    with pytest.raises(AuthorizeError) as error:
+        await provider.authorize(oauth_client, _authorization_params(["trainingpeaks:write"]))
+
+    assert error.value.error == "invalid_scope"
+    assert error.value.error_description == "trainingpeaks:write requires trainingpeaks:read"
+    assert await store.scan(OAUTH_TRANSACTIONS) == []
+
+
+@pytest.mark.asyncio
+async def test_authorize_rejects_scope_not_registered_to_client(provider, store, oauth_client) -> None:
+    read_only_client = oauth_client.model_copy(update={"scope": "trainingpeaks:read"})
+    await provider.register_client(read_only_client)
+
+    with pytest.raises(AuthorizeError) as error:
+        await provider.authorize(
+            read_only_client,
+            _authorization_params(["trainingpeaks:read", "trainingpeaks:write"]),
+        )
+
+    assert error.value.error == "invalid_scope"
+    assert error.value.error_description == "Scope was not registered for this client"
+    assert await store.scan(OAUTH_TRANSACTIONS) == []
+
+
+@pytest.mark.asyncio
+async def test_authorize_persists_exact_requested_scope_set(provider, store, oauth_client) -> None:
+    await provider.register_client(oauth_client)
+
+    google_redirect = await provider.authorize(
+        oauth_client,
+        _authorization_params(["trainingpeaks:read"]),
+    )
+
+    state = parse_qs(urlsplit(google_redirect).query)["state"][0]
+    transaction = await store.get(OAUTH_TRANSACTIONS, document_key("state", state))
+    assert transaction is not None
+    assert transaction["scopes"] == ["trainingpeaks:read"]
 
 
 @pytest.mark.asyncio

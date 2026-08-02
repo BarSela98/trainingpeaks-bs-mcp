@@ -64,6 +64,16 @@ gcloud services enable \
   storage.googleapis.com \
   --project="$PROJECT_ID"
 
+if ! existing_service="$(gcloud run services list \
+  --region="$REGION" \
+  --filter="metadata.name=${SERVICE}" \
+  --format='value(metadata.name)' \
+  --project="$PROJECT_ID")"; then
+  die "Could not verify that Cloud Run service ${SERVICE} is absent; refusing to bootstrap."
+fi
+[[ -z "$existing_service" ]] || die \
+  "Cloud Run service ${SERVICE} already exists in ${PROJECT_ID}/${REGION}; bootstrap is a one-time operation."
+
 if ! gcloud artifacts repositories describe "$ARTIFACT_REPOSITORY" \
   --location="$REGION" --project="$PROJECT_ID" >/dev/null 2>&1; then
   gcloud artifacts repositories create "$ARTIFACT_REPOSITORY" \
@@ -126,8 +136,21 @@ gcloud storage buckets add-iam-policy-binding "gs://${build_bucket}" \
   --project="$PROJECT_ID" \
   --quiet >/dev/null
 
-if ! gcloud firestore databases describe --database="$FIRESTORE_DATABASE" \
-  --project="$PROJECT_ID" >/dev/null 2>&1; then
+if ! firestore_databases="$(gcloud firestore databases list \
+  --project="$PROJECT_ID" \
+  --format='value(name)')"; then
+  die "Could not list Firestore databases; refusing to create or modify one."
+fi
+firestore_database_resource="projects/${PROJECT_ID}/databases/${FIRESTORE_DATABASE}"
+firestore_exists=0
+while IFS= read -r database_name; do
+  if [[ "$database_name" == "$firestore_database_resource" ]]; then
+    firestore_exists=1
+    break
+  fi
+done <<<"$firestore_databases"
+
+if [[ "$firestore_exists" == "0" ]]; then
   gcloud firestore databases create \
     --database="$FIRESTORE_DATABASE" \
     --location="$REGION" \
@@ -135,6 +158,20 @@ if ! gcloud firestore databases describe --database="$FIRESTORE_DATABASE" \
     --delete-protection \
     --project="$PROJECT_ID"
 fi
+
+if ! firestore_configuration="$(gcloud firestore databases describe \
+  --database="$FIRESTORE_DATABASE" \
+  --project="$PROJECT_ID" \
+  --format='value(type,locationId,deleteProtectionState)')"; then
+  die "Could not inspect Firestore database ${FIRESTORE_DATABASE}."
+fi
+IFS=$'\t' read -r firestore_type firestore_location firestore_delete_protection <<<"$firestore_configuration"
+[[ "$firestore_type" == "FIRESTORE_NATIVE" ]] || die \
+  "Firestore database ${FIRESTORE_DATABASE} has type ${firestore_type:-<unset>}; expected FIRESTORE_NATIVE."
+[[ "$firestore_location" == "$REGION" ]] || die \
+  "Firestore database ${FIRESTORE_DATABASE} is in ${firestore_location:-<unset>}; expected ${REGION}."
+[[ "$firestore_delete_protection" == "DELETE_PROTECTION_ENABLED" ]] || die \
+  "Firestore database ${FIRESTORE_DATABASE} does not have delete protection enabled."
 
 # Firestore TTL deletion is asynchronous, while the application also checks
 # every numeric expiry synchronously. These policies bound storage/cost for
