@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
+          - runner: ubuntu-22.04
             asset: linux-x86_64
             executable: tp-mcp
           - runner: windows-latest
@@ -40,14 +40,22 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      - name: Verify release tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python -c "import os, tomllib; version = tomllib.load(open('pyproject.toml', 'rb'))['project']['version']; expected = f'v{version}'; actual = os.environ['RELEASE_TAG']; assert actual == expected, f'tag {actual!r} must match package version {expected!r}'"
+
       - name: Install build dependencies
-        run: python -m pip install -e ".[browser,build,dev]"
+        run: |
+          python -m pip install "uv>=0.7,<1"
+          uv sync --all-extras --frozen
 
       - name: Run tests
-        run: python -m pytest tests -q
+        run: uv run --frozen pytest tests -q
 
       - name: Build executable
-        run: python scripts/build_executable.py
+        run: uv run --frozen python scripts/build_executable.py
 
       - name: Smoke-test executable
         shell: bash
@@ -57,6 +65,10 @@ jobs:
           else
             ./dist/tp-mcp help
           fi
+
+      - name: Smoke-test MCP protocol
+        shell: bash
+        run: uv run --frozen python scripts/legacy_client_check.py "dist/${{ matrix.executable }}" serve
 
       - name: Name release asset
         shell: bash

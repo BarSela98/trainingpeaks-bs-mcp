@@ -65,9 +65,9 @@ def _prepare_structure_payload(
         structure_if, structure_tss, total_seconds = compute_if_tss(parsed_structure)
         return StructurePayload(
             wire_structure=wire_structure,
-            duration_minutes=total_seconds / 60.0,
-            intensity_factor=structure_if,
-            tss=structure_tss,
+            duration_minutes=total_seconds / 60.0 if total_seconds > 0 else None,
+            intensity_factor=structure_if if total_seconds > 0 else None,
+            tss=structure_tss if total_seconds > 0 else None,
             error=None,
         )
     except (ValidationError, ValueError) as e:
@@ -92,6 +92,13 @@ def _validate_structured_workout(structured_workout: dict[str, Any]) -> str | No
         )
     if not isinstance(structured_workout.get("structure"), list):
         return "structured_workout.structure must be a list."
+    if structured_workout.get("primaryLengthMetric") == "distance" and not structured_workout.get(
+        "visualizationDistanceUnit",
+    ):
+        return (
+            'structured_workout with primaryLengthMetric "distance" must include '
+            'visualizationDistanceUnit (e.g. "kilometer" or "mile").'
+        )
     return None
 
 

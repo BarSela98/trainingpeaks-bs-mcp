@@ -31,7 +31,7 @@ For an existing point target, prefer deterministic repair:
 
 ```bash
 workout_math.py repair-equal-ranges workout.json \
-  --metric pace --threshold 3.584229390681003 --increment 5 --output fixed.json
+  --metric pace --threshold LIVE_MPS --increment 5 --output fixed.json
 ```
 
 The repair must preserve the faster target boundary and add one display step

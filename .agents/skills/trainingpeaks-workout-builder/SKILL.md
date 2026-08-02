@@ -194,12 +194,12 @@ scripts/workout_math.py validate-ranges fixed.json
 | Recovery / walk | 50–72% | Easy / walking |
 
 > **Warm-up & cool-down = Zone 1.** Always set warm-up and cool-down steps to
-> Zone 1: pace from walk/easy (0) up to **5:50/km**. In % terms cap
-> `intensity_max` at **80%** (5:50/km = 80% of the current 4:39/km threshold) and
-> use `intensity_min` ≈ **60%** as the easy floor. Do **not** push warm-up/cool-down
-> into Z2+ (above 80% / faster than 5:50/km).
+> Zone 1. In percentage terms, cap `intensity_max` at **80%** of the athlete's
+> live threshold and use `intensity_min` ≈ **60%** as the easy floor. Do **not**
+> push warm-up/cool-down into Z2+; calculate any displayed pace from the live
+> threshold fetched in Step 1.
 
-### Common workout patterns from this athlete's plan
+### Common workout patterns
 
 #### "שינויי קצב" / Fartlek (alternating pace)
 Use **`duration_seconds`** for both the hard and moderate blocks. Alternate in repetitions:
@@ -278,27 +278,27 @@ Use `intensityClass: "rest"` for both jog and static recovery.
 ```
 
 #### "ריצה קלה / רכיבה נוחה" (Easy/recovery session)
-When a specific pace range is given (e.g. "6:02–6:33/km"), always build an explicit structure:
+When a specific pace range is given (e.g. "6:02–6:33/km"), always build an explicit structure. The percentages below use a synthetic 3.5 m/s threshold only to demonstrate the calculation; replace them with values computed from the athlete's live threshold:
 ```python
 structure = {
     'primaryIntensityMetric': 'percentOfThresholdPace',
     'steps': [
         {
             'name': 'Easy Run',
-            'distance_meters': 6600,   # ~6.6 km at 6:02–6:33/km for 40 min
-            'intensity_min': 71,        # 6:33/km = 1000/393/3.5842×100 = 71%
-            'intensity_max': 77,        # 6:02/km = 1000/362/3.5842×100 = 77%
+            'distance_meters': 6400,   # ~6.4 km at 6:02–6:33/km for 40 min
+            'intensity_min': 73,        # 6:33/km = 1000/393/3.5×100 ≈ 73%
+            'intensity_max': 79,        # 6:02/km = 1000/362/3.5×100 ≈ 79%
             'intensityClass': 'active'
         }
     ]
 }
 tp_create_workout(date_str=..., sport='Run', title='40 min Easy Run',
-                  description='...', duration_minutes=40, distance_km=6.6,
+                  description='...', duration_minutes=40, distance_km=6.4,
                   structure=structure)
 ```
 
 When **no specific pace** is given, omit `structure` and pass only `duration_minutes` — TP
-auto-generates a single Z1 `active` block (~71–77% for this athlete, ~7 km for 40 min):
+auto-generates a single Z1 `active` block using the athlete's current settings:
 ```python
 tp_create_workout(date_str=..., sport='Run', title='40 min Easy Run',
                   description='...', duration_minutes=40)
@@ -326,22 +326,23 @@ tp_create_workout(date_str=..., sport='Bike', title='45-90 min Easy Ride',
 > ⚠️ Always set `openDuration: true` on the easy bike step — the ride duration is open
 > (45–90 min). The athlete presses lap/stop when they are done.
 
-> **Note**: TP's auto-generated block uses `intensityClass: "active"` with a Z1 pace target
-> (71–77%). This is intentional — it gives the watch a pace band to display even on easy days.
->
-> **Easy run pace for this athlete**: 6:02–6:33/km = 71–77% of threshold (4:39/km).
+> **Note**: TP's auto-generated block uses `intensityClass: "active"` with a Z1 pace target.
+> This is intentional — it gives the watch a pace band to display even on easy days. The
+> exact percentage and pace depend on the athlete's live threshold settings.
 
 #### "טמפו נפח מתפתח" (Long progressive run — 5 blocks of 4km)
 "20 ק׳׳מ קצב מתפתח (5:20–4:40) הגברת קצב כל 4 ק׳׳מ" → 5 flat distance blocks:
 ```json
 [
-  {"name": "טמפו 1 (5:20/km)", "distance_meters": 4000, "intensity_min": 85, "intensity_max": 88, "intensityClass": "active"},
-  {"name": "טמפו 2 (5:10/km)", "distance_meters": 4000, "intensity_min": 88, "intensity_max": 91, "intensityClass": "active"},
-  {"name": "טמפו 3 (5:00/km)", "distance_meters": 4000, "intensity_min": 91, "intensity_max": 95, "intensityClass": "active"},
-  {"name": "טמפו 4 (4:50/km)", "distance_meters": 4000, "intensity_min": 95, "intensity_max": 98, "intensityClass": "active"},
-  {"name": "טמפו 5 (4:40/km)", "distance_meters": 4000, "intensity_min": 98, "intensity_max": 101, "intensityClass": "active"}
+  {"name": "טמפו 1 (5:20/km)", "distance_meters": 4000, "intensity_min": 88, "intensity_max": 89, "intensityClass": "active"},
+  {"name": "טמפו 2 (5:10/km)", "distance_meters": 4000, "intensity_min": 91, "intensity_max": 92, "intensityClass": "active"},
+  {"name": "טמפו 3 (5:00/km)", "distance_meters": 4000, "intensity_min": 94, "intensity_max": 95, "intensityClass": "active"},
+  {"name": "טמפו 4 (4:50/km)", "distance_meters": 4000, "intensity_min": 97, "intensity_max": 99, "intensityClass": "active"},
+  {"name": "טמפו 5 (4:40/km)", "distance_meters": 4000, "intensity_min": 100, "intensity_max": 102, "intensityClass": "active"}
 ]
 ```
+These percentages also assume the synthetic 3.5 m/s threshold; recompute every
+pace band from the athlete's live threshold before writing the workout.
 Include pace label in step name so the athlete sees the target on their watch.
 
 ## Workout title

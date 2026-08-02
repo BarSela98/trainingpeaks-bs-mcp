@@ -31,6 +31,62 @@ class TestDistanceAndOpenDuration:
         assert wire["visualizationDistanceUnit"] == "kilometer"
         assert wire["structure"][0]["steps"][0]["length"] == {"value": 400, "unit": "meter"}
 
+    def test_distance_repetition_uses_total_meter_offsets(self):
+        repetition = SimpleRepetitionBlock(
+            reps=5,
+            steps=[
+                SimpleStep(name="Fast", distance_meters=200, intensity_min=100, intensity_max=110),
+                SimpleStep(name="Jog", distance_meters=200, intensity_min=55, intensity_max=65),
+            ],
+        )
+
+        wire = build_wire_structure(SimpleWorkoutStructure(steps=[repetition]))
+
+        assert wire["structure"][0]["begin"] == 0
+        assert wire["structure"][0]["end"] == 2000
+
+    def test_mixed_blocks_track_offsets_per_unit(self):
+        structure = SimpleWorkoutStructure(
+            steps=[
+                SimpleStep(name="Warm-up", distance_meters=3000, intensity_min=65, intensity_max=75),
+                SimpleRepetitionBlock(
+                    reps=5,
+                    steps=[
+                        SimpleStep(name="Up", duration_seconds=30, intensity_min=110, intensity_max=125),
+                        SimpleStep(name="Down", duration_seconds=60, intensity_min=45, intensity_max=55),
+                    ],
+                ),
+                SimpleStep(name="Cool-down", distance_meters=2000, intensity_min=60, intensity_max=70),
+            ]
+        )
+
+        wire = build_wire_structure(structure)
+
+        assert (wire["structure"][0]["begin"], wire["structure"][0]["end"]) == (0, 3000)
+        assert (wire["structure"][1]["begin"], wire["structure"][1]["end"]) == (0, 450)
+        assert (wire["structure"][2]["begin"], wire["structure"][2]["end"]) == (3000, 5000)
+
+    def test_mixed_repetition_advances_each_unit(self):
+        structure = SimpleWorkoutStructure(
+            primaryIntensityMetric="percentOfThresholdPace",
+            steps=[
+                SimpleStep(name="Warm-up", distance_meters=2000, intensity_min=82, intensity_max=88),
+                SimpleRepetitionBlock(
+                    reps=6,
+                    steps=[
+                        SimpleStep(name="Hard", distance_meters=800, intensity_min=106, intensity_max=112),
+                        SimpleStep(name="Jog", duration_seconds=120, intensity_min=55, intensity_max=68),
+                    ],
+                ),
+                SimpleStep(name="Cool-down", distance_meters=2000, intensity_min=82, intensity_max=88),
+            ],
+        )
+
+        wire = build_wire_structure(structure)
+
+        assert (wire["structure"][1]["begin"], wire["structure"][1]["end"]) == (2000, 6800)
+        assert (wire["structure"][2]["begin"], wire["structure"][2]["end"]) == (6800, 8800)
+
     def test_step_requires_exactly_one_length(self):
         with pytest.raises(ValidationError, match="Either duration_seconds or distance_meters"):
             SimpleStep(name="Missing", intensity_min=50, intensity_max=60)
@@ -59,6 +115,51 @@ class TestDistanceAndOpenDuration:
         wire = build_wire_structure(structure)
 
         assert wire["structure"][0]["steps"][0]["openDuration"] is True
+
+    def test_open_duration_is_preserved_inside_repetition(self):
+        structure = SimpleWorkoutStructure(
+            steps=[
+                SimpleRepetitionBlock(
+                    reps=5,
+                    steps=[
+                        SimpleStep(name="Climb", duration_seconds=40, intensity_min=112, intensity_max=120),
+                        SimpleStep(
+                            name="Walk down",
+                            duration_seconds=90,
+                            intensity_min=55,
+                            intensity_max=65,
+                            openDuration=True,
+                        ),
+                    ],
+                )
+            ]
+        )
+
+        wire = build_wire_structure(structure)
+        inner_steps = wire["structure"][0]["steps"]
+
+        assert inner_steps[0]["openDuration"] is False
+        assert inner_steps[1]["openDuration"] is True
+
+    @pytest.mark.asyncio
+    async def test_distance_validation_omits_time_metrics(self):
+        result = await tp_validate_structure(
+            json.dumps(
+                {
+                    "primaryIntensityMetric": "percentOfThresholdPace",
+                    "steps": [
+                        {"name": "Warm-up", "distance_meters": 1000, "intensity_min": 50, "intensity_max": 60},
+                        {"name": "Main", "distance_meters": 5000, "intensity_min": 80, "intensity_max": 90},
+                    ],
+                }
+            )
+        )
+
+        assert result["length_metric"] == "distance"
+        assert result["total_distance_meters"] == 6000
+        assert result["total_distance_km"] == 6.0
+        assert "total_duration_seconds" not in result
+        assert "estimated_tss" not in result
 
     @pytest.mark.asyncio
     async def test_mixed_structure_reports_both_totals(self):

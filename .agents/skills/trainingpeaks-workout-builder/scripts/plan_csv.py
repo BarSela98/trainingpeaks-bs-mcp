@@ -18,10 +18,18 @@ WEEK_RE = re.compile(r"^(\d{1,2})\.(\d{1,2})-(\d{1,2})\.(\d{1,2})$")
 def load_existing(path: Path | None) -> dict[str, list[dict[str, Any]]]:
     if path is None:
         return {}
-    payload = json.loads(path.read_text())
-    workouts = payload.get("workouts", payload)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(payload, list):
+        workouts = payload
+    elif isinstance(payload, dict) and isinstance(payload.get("workouts"), list):
+        workouts = payload["workouts"]
+    else:
+        raise ValueError("existing workouts JSON must be a list or an object with a workouts list")
+
     by_date: dict[str, list[dict[str, Any]]] = {}
-    for workout in workouts:
+    for index, workout in enumerate(workouts):
+        if not isinstance(workout, dict):
+            raise ValueError(f"existing workout at index {index} must be an object")
         workout_date = str(workout.get("date", ""))[:10]
         by_date.setdefault(workout_date, []).append(workout)
     return by_date
@@ -31,10 +39,17 @@ def parse_week(value: str, year: int) -> date:
     match = WEEK_RE.match(value.strip())
     if not match:
         raise ValueError(f"invalid week range: {value!r}")
-    start_day, start_month, _, _ = map(int, match.groups())
+    start_day, start_month, end_day, end_month = map(int, match.groups())
     start = date(year, start_month, start_day)
     if start.weekday() != 6:
         raise ValueError(f"week must start on Sunday: {start.isoformat()} is {start:%A}")
+    end_year = year + int((end_month, end_day) < (start_month, start_day))
+    end = date(end_year, end_month, end_day)
+    expected_end = start + timedelta(days=6)
+    if end != expected_end:
+        raise ValueError(
+            f"week must end six days after it starts: expected {expected_end:%d.%m}, got {end:%d.%m}"
+        )
     return start
 
 

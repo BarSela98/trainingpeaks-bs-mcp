@@ -119,6 +119,82 @@ class TestCreateWorkoutWithStructure:
         assert payload["totalTimePlanned"] == 90 / 60.0  # 1.5 hours
 
     @pytest.mark.asyncio
+    async def test_create_with_distance_structure_omits_time_based_metrics(self):
+        """Distance structures should not send synthetic zero time, IF, or TSS."""
+        structure = {
+            "primaryIntensityMetric": "percentOfThresholdPace",
+            "steps": [
+                {
+                    "name": "1 km",
+                    "distance_meters": 1000,
+                    "intensity_min": 80,
+                    "intensity_max": 90,
+                },
+            ],
+        }
+        create_response = APIResponse(
+            success=True,
+            data={"workoutId": 7006, "title": "Distance", "workoutDay": "2026-03-01T00:00:00"},
+        )
+
+        with patch("tp_mcp.tools.workouts.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.post = AsyncMock(return_value=create_response)
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_create_workout(
+                date_str="2026-03-01",
+                sport="Run",
+                title="Distance",
+                structure=structure,
+            )
+
+        assert result["success"] is True
+        payload = mock_instance.post.call_args[1]["json"]
+        assert "totalTimePlanned" not in payload
+        assert "ifPlanned" not in payload
+        assert "tssPlanned" not in payload
+        assert json.loads(payload["structure"])["primaryLengthMetric"] == "distance"
+
+    @pytest.mark.asyncio
+    async def test_create_with_timed_zero_intensity_keeps_zero_if_and_tss(self):
+        """Zero IF/TSS are valid derived values when a structure has timed steps."""
+        structure = {
+            "steps": [
+                {
+                    "name": "Rest",
+                    "duration_seconds": 60,
+                    "intensity_min": 0,
+                    "intensity_max": 0,
+                },
+            ],
+        }
+        create_response = APIResponse(
+            success=True,
+            data={"workoutId": 7007, "title": "Rest", "workoutDay": "2026-03-01T00:00:00"},
+        )
+
+        with patch("tp_mcp.tools.workouts.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.post = AsyncMock(return_value=create_response)
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_create_workout(
+                date_str="2026-03-01",
+                sport="Bike",
+                title="Rest",
+                structure=structure,
+            )
+
+        assert result["success"] is True
+        payload = mock_instance.post.call_args[1]["json"]
+        assert payload["totalTimePlanned"] == pytest.approx(1 / 60)
+        assert payload["ifPlanned"] == 0
+        assert payload["tssPlanned"] == 0
+
+    @pytest.mark.asyncio
     async def test_create_with_tags(self):
         """Tags should be passed in payload."""
         create_response = APIResponse(
@@ -273,6 +349,26 @@ class TestCreateWorkoutWithStructure:
         assert result["isError"] is True
         assert result["error_code"] == "VALIDATION_ERROR"
         assert "structured_workout" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_create_rejects_structured_workout_distance_without_viz_unit(self):
+        """Native distance structures require an explicit visualization unit."""
+        result = await tp_create_workout(
+            date_str="2026-03-01",
+            sport="Run",
+            title="Bad distance wire",
+            duration_minutes=60,
+            structured_workout={
+                "structure": [],
+                "polyline": [],
+                "primaryLengthMetric": "distance",
+                "primaryIntensityMetric": "percentOfThresholdPace",
+                "primaryIntensityTargetOrRange": "range",
+            },
+        )
+        assert result["isError"] is True
+        assert result["error_code"] == "VALIDATION_ERROR"
+        assert "visualizationDistanceUnit" in result["message"]
 
 
 class TestUpdateWorkout:
@@ -587,6 +683,45 @@ class TestUpdateWorkout:
         assert put_payload["ifPlanned"] == pytest.approx(0.771, abs=0.001)
         assert put_payload["ifPlanned"] < 1
         assert put_payload["tssPlanned"] > 1
+
+    @pytest.mark.asyncio
+    async def test_update_with_distance_structure_does_not_write_zero_metrics(self):
+        """Distance structures should preserve planned time/TSS instead of replacing them with zero."""
+        existing = {
+            "workoutId": 1001,
+            "totalTimePlanned": 1.25,
+            "tssPlanned": 70,
+            "ifPlanned": 0.8,
+        }
+        get_response = APIResponse(success=True, data=existing)
+        put_response = APIResponse(success=True, data=None)
+        structure = {
+            "primaryIntensityMetric": "percentOfThresholdPace",
+            "steps": [
+                {
+                    "name": "1 km",
+                    "distance_meters": 1000,
+                    "intensity_min": 80,
+                    "intensity_max": 90,
+                },
+            ],
+        }
+
+        with patch("tp_mcp.tools.workouts.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.get = AsyncMock(return_value=get_response)
+            mock_instance.put = AsyncMock(return_value=put_response)
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_update_workout(workout_id="1001", structure=structure)
+
+        assert result["success"] is True
+        put_payload = mock_instance.put.call_args[1]["json"]
+        assert put_payload["totalTimePlanned"] == 1.25
+        assert put_payload["tssPlanned"] == 70
+        assert "ifPlanned" not in put_payload
+        assert json.loads(put_payload["structure"])["primaryLengthMetric"] == "distance"
 
     @pytest.mark.asyncio
     async def test_update_with_structure_explicit_duration_and_tss_override(self):

@@ -286,7 +286,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
       "args": ["some-other-mcp"]
     },
     "trainingpeaks": {
-      "command": "/Users/you/trainingpeaks-mcp/.venv/bin/tp-mcp",
+      "command": "/Users/you/trainingpeaks-bs-mcp/.venv/bin/tp-mcp",
       "args": ["serve"]
     }
   }
@@ -299,7 +299,7 @@ Restart Claude Desktop. You're ready to go!
 
 ## Structured Workouts
 
-Create workouts with full interval structure. The server auto-computes duration, IF, and TSS from the structure:
+Create workouts with full interval structure. For time-based structures, the server auto-computes duration, IF, and TSS:
 
 ```json
 {
@@ -343,7 +343,7 @@ You can use the same simplified `structure` object with `tp_update_workout`:
 }
 ```
 
-If `duration_minutes` and `tss_planned` are omitted, they are derived from the structure. If you pass them explicitly, they override the derived values.
+If `duration_minutes` and `tss_planned` are omitted, they are derived from time-based structures. If you pass them explicitly, they override the derived values. For distance-based or mixed structures, pass `distance_km` and any planned time or TSS explicitly when needed.
 
 For advanced round-trip use cases, `tp_create_workout` and `tp_update_workout` also accept a native `structured_workout` payload in TrainingPeaks builder format. When a workout already has a native structure, `tp_get_workout` returns it as `structured_workout`.
 
@@ -361,6 +361,8 @@ Workout comments are exposed via `tp_get_workout()["workout_comments"]` or `tp_g
   }
 }
 ```
+
+When a native `structured_workout` uses `primaryLengthMetric: "distance"`, it must also include `visualizationDistanceUnit` set to `"kilometer"` or `"mile"`.
 
 Use either `structure` or `structured_workout` in a single create/update call, not both.
 
@@ -487,6 +489,15 @@ The repository includes a reusable agent skill at
 pace/power conversion, CSV-plan mapping, normalized workout fingerprints, and
 safe repair of equal intensity ranges. Its scripts can be run directly; see
 the skill's `SKILL.md` for the full workflow.
+
+### Publishing executable releases
+
+The release workflow builds and tests native executables for Windows x64,
+Linux x64, macOS Apple Silicon, and macOS Intel. To publish a release, update
+the version in `pyproject.toml` and `uv.lock`, commit it, then push a matching
+`vX.Y.Z` tag. GitHub Actions creates the release, attaches all four
+executables, and publishes `SHA256SUMS.txt`. Run the workflow manually from
+the Actions tab to test all builds without publishing a release.
 
 ### Adding a tool
 
