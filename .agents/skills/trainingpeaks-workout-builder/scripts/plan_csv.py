@@ -11,7 +11,6 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-
 DAY_NAMES = ("ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת")
 WEEK_RE = re.compile(r"^(\d{1,2})\.(\d{1,2})-(\d{1,2})\.(\d{1,2})$")
 

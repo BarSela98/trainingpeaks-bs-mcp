@@ -195,18 +195,33 @@ out. The tools' text output is unaffected either way.)*
 If you have [Claude Code](https://claude.ai/code), paste this prompt:
 
 ```
-Set up the TrainingPeaks MCP server from https://github.com/JamsusMaximus/trainingpeaks-mcp - clone it, create a venv, install it, then walk me through getting my TrainingPeaks cookie from my browser and run tp-mcp auth. Finally, add it to my Claude Desktop config.
+Set up the TrainingPeaks MCP server from https://github.com/BarSela98/trainingpeaks-bs-mcp - clone it, create a venv, install it, then walk me through getting my TrainingPeaks cookie from my browser and run tp-mcp auth. Finally, add it to my Claude Desktop config.
 ```
 
 Claude will handle the installation and guide you through authentication step-by-step.
 
-### Option B: Manual Setup
+### Option B: Standalone executable
+
+Tagged releases publish self-contained executables for Linux, Windows, and
+Intel/Apple Silicon macOS. Download the asset for your platform, make it
+executable on macOS/Linux, then run authentication and print the MCP config:
+
+```bash
+chmod +x tp-mcp-macos-arm64  # macOS/Linux only
+./tp-mcp-macos-arm64 auth
+./tp-mcp-macos-arm64 config
+```
+
+The generated config uses the exact downloaded executable path, even if the
+file was renamed. Release assets include a `SHA256SUMS.txt` checksum file.
+
+### Option C: Manual Setup
 
 #### Step 1: Install
 
 ```bash
-git clone https://github.com/JamsusMaximus/trainingpeaks-mcp.git
-cd trainingpeaks-mcp
+git clone https://github.com/BarSela98/trainingpeaks-bs-mcp.git
+cd trainingpeaks-bs-mcp
 python3 -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -e .
@@ -349,6 +364,23 @@ Workout comments are exposed via `tp_get_workout()["workout_comments"]` or `tp_g
 
 Use either `structure` or `structured_workout` in a single create/update call, not both.
 
+Simplified steps may use exactly one of `duration_seconds` or
+`distance_meters`. Distance steps produce TrainingPeaks' meter-based wire
+format (and pace-oriented charts); a workout can mix distance intervals with
+timed recoveries. Set `openDuration: true` for steps advanced manually with the
+lap button, such as hill descents or open-ended easy rides:
+
+```json
+{
+  "primaryIntensityMetric": "percentOfThresholdPace",
+  "steps": [
+    {"name": "Warm-up", "distance_meters": 2000, "intensity_min": 60, "intensity_max": 80},
+    {"name": "Hill", "duration_seconds": 30, "intensity_min": 110, "intensity_max": 120},
+    {"name": "Walk down", "duration_seconds": 90, "intensity_min": 50, "intensity_max": 60, "openDuration": true}
+  ]
+}
+```
+
 For planned workout scheduling, `tp_create_workout` and `tp_update_workout` accept:
 
 - `YYYY-MM-DD` for all-day planning on a calendar date
@@ -447,6 +479,14 @@ pytest tests/ -v
 mypy src/
 ruff check src/
 ```
+
+### Workout-builder skill
+
+The repository includes a reusable agent skill at
+`.agents/skills/trainingpeaks-workout-builder`. It provides calibrated
+pace/power conversion, CSV-plan mapping, normalized workout fingerprints, and
+safe repair of equal intensity ranges. Its scripts can be run directly; see
+the skill's `SKILL.md` for the full workflow.
 
 ### Adding a tool
 
