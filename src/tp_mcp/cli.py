@@ -174,12 +174,18 @@ def cmd_config() -> int:
     import json
     import shutil
 
-    # Find the tp-mcp binary path
-    tp_mcp_path = shutil.which("tp-mcp")
-    if not tp_mcp_path:
-        # Fall back to sys.executable directory
-        from pathlib import Path
-        tp_mcp_path = str(Path(sys.executable).parent / "tp-mcp")
+    # Frozen releases can be renamed after download, so preserve the exact
+    # executable path that is currently running.
+    if getattr(sys, "frozen", False):
+        tp_mcp_path = sys.executable
+    else:
+        found_path = shutil.which("tp-mcp")
+        if found_path:
+            tp_mcp_path = found_path
+        else:
+            from pathlib import Path
+
+            tp_mcp_path = str(Path(sys.executable).parent / "tp-mcp")
 
     config = {
         "trainingpeaks": {

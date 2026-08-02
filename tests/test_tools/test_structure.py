@@ -3,6 +3,7 @@
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from tp_mcp.tools.structure import (
     SimpleRepetitionBlock,
@@ -13,6 +14,69 @@ from tp_mcp.tools.structure import (
     parse_structure_input,
     tp_validate_structure,
 )
+
+
+class TestDistanceAndOpenDuration:
+    """Distance, mixed-unit, and open-ended step support."""
+
+    def test_distance_step_uses_meter_wire_format(self):
+        structure = SimpleWorkoutStructure(
+            primaryIntensityMetric="percentOfThresholdPace",
+            steps=[SimpleStep(name="400m", distance_meters=400, intensity_min=95, intensity_max=105)],
+        )
+
+        wire = build_wire_structure(structure)
+
+        assert wire["primaryLengthMetric"] == "distance"
+        assert wire["visualizationDistanceUnit"] == "kilometer"
+        assert wire["structure"][0]["steps"][0]["length"] == {"value": 400, "unit": "meter"}
+
+    def test_step_requires_exactly_one_length(self):
+        with pytest.raises(ValidationError, match="Either duration_seconds or distance_meters"):
+            SimpleStep(name="Missing", intensity_min=50, intensity_max=60)
+        with pytest.raises(ValidationError, match="Only one"):
+            SimpleStep(
+                name="Both",
+                duration_seconds=60,
+                distance_meters=200,
+                intensity_min=50,
+                intensity_max=60,
+            )
+
+    def test_open_duration_is_preserved(self):
+        structure = SimpleWorkoutStructure(
+            steps=[
+                SimpleStep(
+                    name="Recovery",
+                    duration_seconds=90,
+                    intensity_min=50,
+                    intensity_max=60,
+                    openDuration=True,
+                )
+            ]
+        )
+
+        wire = build_wire_structure(structure)
+
+        assert wire["structure"][0]["steps"][0]["openDuration"] is True
+
+    @pytest.mark.asyncio
+    async def test_mixed_structure_reports_both_totals(self):
+        result = await tp_validate_structure(
+            json.dumps(
+                {
+                    "steps": [
+                        {"name": "Run", "distance_meters": 1000, "intensity_min": 70, "intensity_max": 80},
+                        {"name": "Rest", "duration_seconds": 60, "intensity_min": 40, "intensity_max": 50},
+                    ]
+                }
+            )
+        )
+
+        assert result["length_metric"] == "mixed"
+        assert result["total_distance_meters"] == 1000
+        assert result["total_duration_seconds"] == 60
+        assert "estimated_tss" not in result
 
 
 class TestBuildSimpleStep:

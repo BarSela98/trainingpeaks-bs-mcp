@@ -65,9 +65,12 @@ def equal_intensity_ranges(steps: list[dict[str, Any]], prefix: str = "steps") -
         if step.get("type") == "repetition":
             errors.extend(equal_intensity_ranges(step.get("steps", []), f"{path}.steps"))
             continue
-        if "intensity_min" in step and "intensity_max" in step:
-            if float(step["intensity_min"]) >= float(step["intensity_max"]):
-                errors.append(path)
+        if (
+            "intensity_min" in step
+            and "intensity_max" in step
+            and float(step["intensity_min"]) >= float(step["intensity_max"])
+        ):
+            errors.append(path)
         for target_index, target in enumerate(step.get("targets", [])):
             if float(target.get("minValue", 0)) >= float(target.get("maxValue", 0)):
                 errors.append(f"{path}.targets[{target_index}]")

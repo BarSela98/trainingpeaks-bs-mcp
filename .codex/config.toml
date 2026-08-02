@@ -1,7 +1,0 @@
-[mcp_servers.trainingpeaks]
-command = "uv"
-args = [
-    "run",
-    "tp-mcp",
-    "serve",
-]
