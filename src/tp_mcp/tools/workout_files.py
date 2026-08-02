@@ -7,8 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from tp_mcp.client import TPClient
+from tp_mcp.client.context import cloud_principal
 
 FILE_DATA_DIR = Path(tempfile.gettempdir()) / "tp-mcp" / "files"
+REMOTE_MAX_FILE_BYTES = 3 * 1024 * 1024
 
 
 def _is_numeric_id(value: str, *, allow_negative: bool = False) -> bool:
@@ -92,6 +94,13 @@ async def tp_upload_workout_file(
             "error_code": "VALIDATION_ERROR",
             "message": "Provide only one of file_path or file_data_base64.",
         }
+    remote_principal = cloud_principal.get()
+    if remote_principal is not None and file_path:
+        return {
+            "isError": True,
+            "error_code": "REMOTE_PATH_DISABLED",
+            "message": "Remote uploads require file_data_base64; server file paths are not accepted.",
+        }
 
     raw_bytes: bytes
     file_name: str
@@ -121,6 +130,12 @@ async def tp_upload_workout_file(
             "isError": True,
             "error_code": "VALIDATION_ERROR",
             "message": "Uploaded file content must not be empty.",
+        }
+    if remote_principal is not None and len(raw_bytes) > REMOTE_MAX_FILE_BYTES:
+        return {
+            "isError": True,
+            "error_code": "VALIDATION_ERROR",
+            "message": f"Remote workout files are limited to {REMOTE_MAX_FILE_BYTES} bytes.",
         }
 
     gzipped = _gzip_if_needed(raw_bytes)
@@ -208,6 +223,13 @@ async def tp_download_workout_file(
             "error_code": "VALIDATION_ERROR",
             "message": "file_id must be a numeric ID (can be negative).",
         }
+    remote_principal = cloud_principal.get()
+    if remote_principal is not None and output_path:
+        return {
+            "isError": True,
+            "error_code": "REMOTE_PATH_DISABLED",
+            "message": "Remote downloads return file_data_base64; server output paths are not accepted.",
+        }
 
     async with TPClient() as client:
         athlete_id = await client.ensure_athlete_id()
@@ -232,7 +254,17 @@ async def tp_download_workout_file(
 
         filename = _parse_content_disposition_filename(response.content_disposition)
         content = response.content
-        if output_path:
+        file_data_base64: str | None = None
+        if remote_principal is not None:
+            if len(content) > REMOTE_MAX_FILE_BYTES:
+                return {
+                    "isError": True,
+                    "error_code": "FILE_TOO_LARGE",
+                    "message": f"Remote workout files are limited to {REMOTE_MAX_FILE_BYTES} bytes.",
+                }
+            saved_to = None
+            file_data_base64 = base64.b64encode(content).decode("ascii")
+        elif output_path:
             target = Path(output_path)
             if target.exists() and target.is_dir():
                 save_name = filename or f"workout_{workout_id}_file_{file_id}.fit.gz"
@@ -249,8 +281,9 @@ async def tp_download_workout_file(
                 filename=filename or "",
                 data=content,
             )
+            file_data_base64 = None
 
-        return {
+        result = {
             "workout_id": workout_id,
             "file_id": file_id,
             "file_name": filename,
@@ -259,6 +292,9 @@ async def tp_download_workout_file(
             "saved_to": saved_to,
             "message": "Workout file downloaded successfully.",
         }
+        if file_data_base64 is not None:
+            result["file_data_base64"] = file_data_base64
+        return result
 
 
 async def tp_delete_workout_file(workout_id: str, file_id: str) -> dict[str, Any]:

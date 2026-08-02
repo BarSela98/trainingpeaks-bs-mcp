@@ -121,10 +121,10 @@ async def validate_auth(cookie: str) -> AuthResult:
             status=AuthStatus.NETWORK_ERROR,
             message="Request timed out. Check your network connection.",
         )
-    except httpx.RequestError as e:
+    except httpx.RequestError:
         return AuthResult(
             status=AuthStatus.NETWORK_ERROR,
-            message=f"Network error: {e}",
+            message="Network error while contacting TrainingPeaks.",
         )
 
 

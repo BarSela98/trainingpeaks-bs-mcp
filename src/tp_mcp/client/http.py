@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from tp_mcp.auth import get_credential
+from tp_mcp.client.context import athlete_override, cloud_credential, cloud_principal
 
 logger = logging.getLogger("tp-mcp")
 
@@ -133,17 +134,25 @@ class TPClient:
     Handles authentication, error handling, and response parsing.
     """
 
-    # Class-level caches: persist across instances within the MCP server process
+    # These legacy singleton values are retained for the single-user local stdio
+    # transport. Remote requests never read or write them.
     _cached_athlete_id: int | None = None
     _cached_user_data: dict | None = None
     _shared_token_cache: TokenCache | None = None
 
     @classmethod
-    def _get_token_cache(cls) -> TokenCache:
-        """Get or create the shared token cache."""
-        if cls._shared_token_cache is None:
-            cls._shared_token_cache = TokenCache()
-        return cls._shared_token_cache
+    def _get_token_cache(
+        cls,
+        principal: str | None = None,
+    ) -> TokenCache:
+        """Get local shared state or a fresh request-owned remote token cache."""
+        if principal is None:
+            if cls._shared_token_cache is None:
+                cls._shared_token_cache = TokenCache()
+            return cls._shared_token_cache
+        # Never retain a TrainingPeaks-derived bearer token between remote MCP
+        # calls. The caller-supplied cookie is exchanged anew for each request.
+        return TokenCache()
 
     def __init__(self, timeout: float = DEFAULT_TIMEOUT):
         """Initialize the client.
@@ -151,12 +160,23 @@ class TPClient:
         Args:
             timeout: Request timeout in seconds.
         """
+        principal = cloud_principal.get()
+        credential = cloud_credential.get()
+        if principal is None and credential is not None:
+            raise RuntimeError("Cloud credential cannot be used without an authenticated principal")
+        if principal is not None:
+            principal = principal.strip()
+            if not principal:
+                raise RuntimeError("Cloud principal cannot be empty")
+
         self.base_url = TP_API_BASE
         self.timeout = timeout
         self._client: httpx.AsyncClient | None = None
         self._athlete_id: int | None = None
+        self._remote_user_data: dict[str, Any] | None = None
         self._last_request_time: float = 0.0
-        self._token_cache = TPClient._get_token_cache()
+        self._principal = principal
+        self._token_cache = TPClient._get_token_cache(principal)
 
     async def __aenter__(self) -> "TPClient":
         """Enter async context."""
@@ -184,6 +204,43 @@ class TPClient:
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+        if self._bound_principal() is not None:
+            # Remote credentials and their derived TrainingPeaks bearer tokens
+            # are request-scoped. Clear all derived state as soon as the client
+            # finishes, even though this instance is not globally cached.
+            self._token_cache.clear()
+            self._athlete_id = None
+            self._remote_user_data = None
+
+    def _bound_principal(self) -> str | None:
+        """Return the cloud principal captured when this client was created."""
+        return getattr(self, "_principal", cloud_principal.get())
+
+    def _credential_cookie(self) -> str | None:
+        """Resolve the credential without crossing local/cloud trust boundaries."""
+        bound_principal = self._bound_principal()
+        if bound_principal is not None:
+            # An authenticated remote request must never inherit credentials from
+            # the Cloud Run host's keyring, retain a header after its request, or
+            # reuse an instance under another principal's request context.
+            if cloud_principal.get() != bound_principal:
+                return None
+            return cloud_credential.get()
+
+        credential = get_credential()
+        if credential.success and credential.cookie:
+            return credential.cookie
+        return None
+
+    def _missing_credential_message(self) -> str:
+        if self._bound_principal() is not None:
+            return "The remote request is missing the X-TrainingPeaks-Auth header."
+        return "No credential stored. Run 'tp-mcp auth' to authenticate."
+
+    def _expired_credential_message(self) -> str:
+        if self._bound_principal() is not None:
+            return "The TrainingPeaks credential supplied in X-TrainingPeaks-Auth is expired."
+        return "Cookie expired. Use 'tp_refresh_auth' tool to re-authenticate."
 
     def _get_headers(self) -> dict[str, str]:
         """Get request headers with Bearer token authentication.
@@ -222,16 +279,16 @@ class TPClient:
         await self._throttle()
         assert self._client is not None
 
-        cred = get_credential()
-        if not cred.success or not cred.cookie:
+        cookie = self._credential_cookie()
+        if not cookie:
             return APIResponse(
                 success=False,
                 error_code=ErrorCode.AUTH_INVALID,
-                message="No credential stored. Run 'tp-mcp auth' to authenticate.",
+                message=self._missing_credential_message(),
             )
 
         url = f"{self.base_url}{TOKEN_ENDPOINT}"
-        headers = self._get_cookie_headers(cred.cookie)
+        headers = self._get_cookie_headers(cookie)
 
         try:
             response = await self._client.request(
@@ -244,7 +301,7 @@ class TPClient:
                 return APIResponse(
                     success=False,
                     error_code=ErrorCode.AUTH_EXPIRED,
-                    message="Cookie expired. Use 'tp_refresh_auth' tool to re-authenticate.",
+                    message=self._expired_credential_message(),
                 )
 
             if response.status_code != 200:
@@ -270,11 +327,11 @@ class TPClient:
                 error_code=ErrorCode.NETWORK_ERROR,
                 message="Token exchange timed out.",
             )
-        except httpx.RequestError as e:
+        except httpx.RequestError:
             return APIResponse(
                 success=False,
                 error_code=ErrorCode.NETWORK_ERROR,
-                message=f"Network error during token exchange: {e}",
+                message="Network error during token exchange.",
             )
 
     async def _ensure_access_token(self) -> APIResponse:
@@ -285,6 +342,13 @@ class TPClient:
         Returns:
             APIResponse indicating success or the error that occurred.
         """
+        if self._bound_principal() is not None and not self._credential_cookie():
+            return APIResponse(
+                success=False,
+                error_code=ErrorCode.AUTH_INVALID,
+                message=self._missing_credential_message(),
+            )
+
         # Fast path: token is still valid
         if self._token_cache.is_valid():
             return APIResponse(success=True)
@@ -333,9 +397,11 @@ class TPClient:
             return APIResponse(
                 success=False,
                 error_code=ErrorCode.FORBIDDEN_ENDPOINT,
-                message=(f"Endpoint {endpoint} is disabled in this connector "
-                         "(destructive plan operation — has emptied a published plan). "
-                         "Use the synthetic tp_apply_training_plan instead."),
+                message=(
+                    f"Endpoint {endpoint} is disabled in this connector "
+                    "(destructive plan operation — has emptied a published plan). "
+                    "Use the synthetic tp_apply_training_plan instead."
+                ),
             )
 
         await self._ensure_client()
@@ -374,11 +440,11 @@ class TPClient:
                 error_code=ErrorCode.NETWORK_ERROR,
                 message="Request timed out. Check your network connection.",
             )
-        except httpx.RequestError as e:
+        except httpx.RequestError:
             return APIResponse(
                 success=False,
                 error_code=ErrorCode.NETWORK_ERROR,
-                message=f"Network error: {e}",
+                message="Network error while contacting TrainingPeaks.",
             )
 
     def _handle_response(self, response: httpx.Response) -> APIResponse:
@@ -412,7 +478,11 @@ class TPClient:
             return APIResponse(
                 success=False,
                 error_code=ErrorCode.AUTH_EXPIRED,
-                message="Session expired or invalid. Run 'tp-mcp auth' to re-authenticate.",
+                message=(
+                    "TrainingPeaks session expired or invalid. Send a fresh X-TrainingPeaks-Auth header."
+                    if self._bound_principal() is not None
+                    else "Session expired or invalid. Run 'tp-mcp auth' to re-authenticate."
+                ),
             )
 
         if response.status_code == 403:
@@ -547,18 +617,22 @@ class TPClient:
                 error_code=ErrorCode.NETWORK_ERROR,
                 message="Request timed out. Check your network connection.",
             )
-        except httpx.RequestError as e:
+        except httpx.RequestError:
             return RawResponse(
                 success=False,
                 error_code=ErrorCode.NETWORK_ERROR,
-                message=f"Network error: {e}",
+                message="Network error while contacting TrainingPeaks.",
             )
 
         if response.status_code == 401:
             return RawResponse(
                 success=False,
                 error_code=ErrorCode.AUTH_EXPIRED,
-                message="Session expired or invalid. Run 'tp-mcp auth' to re-authenticate.",
+                message=(
+                    "TrainingPeaks session expired or invalid. Send a fresh X-TrainingPeaks-Auth header."
+                    if self._bound_principal() is not None
+                    else "Session expired or invalid. Run 'tp-mcp auth' to re-authenticate."
+                ),
             )
         if response.status_code == 404:
             return RawResponse(
@@ -570,7 +644,7 @@ class TPClient:
             return RawResponse(
                 success=False,
                 error_code=ErrorCode.API_ERROR,
-                message=f"API error: {response.status_code} - {response.text}",
+                message=f"API error: {response.status_code}",
             )
 
         return RawResponse(
@@ -590,17 +664,39 @@ class TPClient:
         """Set the athlete ID."""
         self._athlete_id = value
 
+    def _get_cached_athlete_id(self) -> int | None:
+        """Read local process state or request-local remote state."""
+        principal = self._bound_principal()
+        if principal is None:
+            return TPClient._cached_athlete_id
+        return self._athlete_id
+
+    def _cache_athlete_id(self, athlete_id: int) -> None:
+        """Cache an athlete ID locally or only on this remote client instance."""
+        principal = self._bound_principal()
+        if principal is None:
+            TPClient._cached_athlete_id = athlete_id
+            return
+        self._athlete_id = athlete_id
+
     async def _get_user_data(self) -> dict | None:
-        """Get user data, using class-level cache to avoid redundant API calls."""
-        if TPClient._cached_user_data is not None:
-            return TPClient._cached_user_data
+        """Get user data from local state or this remote request only."""
+        principal = self._bound_principal()
+        if principal is None:
+            if TPClient._cached_user_data is not None:
+                return TPClient._cached_user_data
+        elif self._remote_user_data is not None:
+            return self._remote_user_data
 
         response = await self.get("/users/v3/user")
         if not response.success or not response.data:
             return None
 
         user_data = response.data.get("user", response.data)
-        TPClient._cached_user_data = user_data
+        if principal is None:
+            TPClient._cached_user_data = user_data
+        else:
+            self._remote_user_data = user_data
         return user_data
 
     async def ensure_athlete_id(self) -> int | None:
@@ -610,20 +706,20 @@ class TPClient:
         target a specific athlete by name or ID. When no override is set,
         resolves to the coach's own athlete entry.
 
-        Caches at class level only when no athlete override is active.
+        Caches within the current local/cloud tenant only when no athlete
+        override is active.
         """
-        from tp_mcp.client.context import athlete_override
-
         athlete = athlete_override.get()
 
         # Use cache only when no specific athlete is requested
         if athlete is None:
-            if TPClient._cached_athlete_id is not None:
-                self._athlete_id = TPClient._cached_athlete_id
-                return TPClient._cached_athlete_id
+            cached_athlete_id = self._get_cached_athlete_id()
+            if cached_athlete_id is not None:
+                self._athlete_id = cached_athlete_id
+                return cached_athlete_id
 
             if self._athlete_id is not None:
-                TPClient._cached_athlete_id = self._athlete_id
+                self._cache_athlete_id(self._athlete_id)
                 return self._athlete_id
 
         user_data = await self._get_user_data()
@@ -658,8 +754,7 @@ class TPClient:
                     athlete_id = matches[0].get("athleteId")
                 elif len(matches) > 1:
                     names = [
-                        f"{a.get('firstName', '')} {a.get('lastName', '')} (ID: {a.get('athleteId')})"
-                        for a in matches
+                        f"{a.get('firstName', '')} {a.get('lastName', '')} (ID: {a.get('athleteId')})" for a in matches
                     ]
                     raise ValueError(
                         f"Ambiguous athlete name '{athlete}' matches {len(matches)} athletes: "
@@ -688,7 +783,7 @@ class TPClient:
         if athlete_id:
             self._athlete_id = athlete_id
             if athlete is None:
-                TPClient._cached_athlete_id = athlete_id
+                self._cache_athlete_id(athlete_id)
 
         return athlete_id
 
@@ -701,10 +796,9 @@ class TPClient:
         result: dict[str, Any] = {"success": False, "step": "init", "details": {}}
 
         # Step 1: Check credential
-        cred = get_credential()
-        if not cred.success or not cred.cookie:
+        if not self._credential_cookie():
             result["step"] = "credential_check"
-            result["error"] = "No credential stored. Run 'tp-mcp auth' to authenticate."
+            result["error"] = self._missing_credential_message()
             return result
 
         result["details"]["has_credential"] = True

@@ -165,6 +165,13 @@ def cmd_serve() -> int:
     return run_server()
 
 
+def cmd_serve_http() -> int:
+    """Start the authenticated Streamable HTTP server."""
+    from tp_mcp.cloud.web import run_http_server
+
+    return run_http_server()
+
+
 def cmd_config() -> int:
     """Output Claude Desktop config snippet.
 
@@ -217,6 +224,7 @@ def cmd_help() -> int:
     print("  auth-clear            Clear stored cookie")
     print("  config                Output Claude Desktop config snippet")
     print("  serve                 Start the MCP server")
+    print("  serve-http            Start the Cloud Run Streamable HTTP server")
     print("  help                  Show this help message")
     print()
     print("Examples:")
@@ -256,6 +264,7 @@ def main() -> int:
         "auth-clear": cmd_auth_clear,
         "config": cmd_config,
         "serve": cmd_serve,
+        "serve-http": cmd_serve_http,
         "help": cmd_help,
         "--help": cmd_help,
         "-h": cmd_help,

@@ -39,6 +39,7 @@ import httpx
 from pydantic import ValidationError
 
 from tp_mcp.client import TPClient, parse_workout_analysis
+from tp_mcp.client.context import cloud_principal
 from tp_mcp.tools._validation import WorkoutIdInput, format_validation_error
 
 logger = logging.getLogger("tp-mcp")
@@ -58,6 +59,8 @@ def _save_analysis_json(workout_id: int, data: dict[str, Any]) -> str:
     Returns:
         Absolute path to the saved file.
     """
+    if cloud_principal.get() is not None:
+        raise RuntimeError("Remote analysis data must not be persisted to the server filesystem")
     ANALYSIS_DATA_DIR.mkdir(parents=True, exist_ok=True)
     filepath = ANALYSIS_DATA_DIR / f"workout_{workout_id}.json"
     filepath.write_text(json.dumps(data, indent=2))
@@ -285,8 +288,9 @@ async def tp_analyze_workout(workout_id: str) -> dict[str, Any]:
             "message": "Failed to parse workout analysis.",
         }
 
-    # Save full raw data (including time-series) to file
-    data_file = _save_analysis_json(wid, raw_data)
+    # Local stdio callers can inspect full time-series data through a temporary
+    # file. Remote tenants never share server-side filesystem artifacts.
+    data_file = _save_analysis_json(wid, raw_data) if cloud_principal.get() is None else None
 
     # Return summary inline, point to file for full data
     totals_out = {t.name: {"value": t.value, "unit": t.unit} for t in analysis.totals}

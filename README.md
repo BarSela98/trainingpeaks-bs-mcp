@@ -6,7 +6,12 @@
 
 Connect TrainingPeaks to Claude and other AI assistants via the Model Context Protocol (MCP). Query workouts, build structured intervals, manage your calendar, track fitness trends, and control your training through natural conversation.
 
-**No API approval required.** The official Training Peaks API is approval-gated, but this server uses secure cookie authentication that any user can set up in minutes. Your cookie is stored in your system keyring, never transmitted anywhere except to TrainingPeaks.
+**No API approval required.** The official Training Peaks API is approval-gated,
+but this server uses secure cookie authentication that any user can set up in
+minutes. In the default local stdio setup, your cookie stays in a protected
+local credential backend (the system keyring is preferred) and is sent only to
+TrainingPeaks. The optional Cloud Run transport instead receives it over HTTPS
+on each MCP request and never persists, logs, or caches it across requests.
 
 ## What You Can Do
 
@@ -165,7 +170,7 @@ honoured exactly. They update a **threshold** (FTP / LTHR / threshold pace).
 | `tp_get_profile` | Get athlete profile |
 | `tp_auth_status` | Check authentication status |
 | `tp_list_athletes` | List athletes (coach accounts) |
-| `tp_refresh_auth` | Re-authenticate from browser cookie |
+| `tp_refresh_auth` | Re-authenticate from browser cookie (local stdio only; hidden remotely) |
 
 ---
 
@@ -185,10 +190,14 @@ complete on its own.
 | `tp_get_workout` | Interval-profile viewer for structured workouts (summary fallback otherwise) |
 
 *(Note: as of July 2026, Claude clients still connect to local stdio servers over the
-pre-2026 protocol, so the apps ship ready but won't render until client support rolls
-out. The tools' text output is unaffected either way.)*
+pre-2026 protocol, so the apps ship ready but won't render there until client support
+rolls out. The optional Streamable HTTP transport supports the current protocol. The
+tools' text output is unaffected either way.)*
 
 ## Setup Options
+
+Options A-C below run the server locally over stdio. For a managed remote
+Streamable HTTP service, use Option D.
 
 ### Option A: Auto-Setup with Claude Code
 
@@ -294,6 +303,35 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 ```
 
 Restart Claude Desktop. You're ready to go!
+
+### Option D: Google Cloud Run (remote, multi-athlete)
+
+The optional Cloud Run deployment exposes Streamable HTTP at `/mcp`, protects
+it with invite-only Google/MCP OAuth, and keeps each request bound to its Google
+identity. The remote service does **not** store a TrainingPeaks cookie. Your MCP
+client must inject the raw `Production_tpAuth` value as
+`X-TrainingPeaks-Auth` on every `/mcp` request over HTTPS; the OAuth bearer token
+remains a separate `Authorization` header. Each request validates the cookie,
+and the first one binds the Google subject to the non-secret TrainingPeaks
+athlete ID so a later request cannot substitute another athlete's cookie.
+After Google sign-in, the athlete must explicitly approve a service page that
+lists the requested read/write TrainingPeaks scopes before an MCP authorization
+code is issued.
+
+Only use a client that can source this custom header from an OS keychain or
+non-exporting secret provider. Do not put the cookie in a committed client
+configuration, URL, shell history, or ordinary environment file. See the
+[Cloud Run deployment guide](docs/cloud-run.md) for project bootstrap, OAuth,
+allowlist, deployment, and client configuration.
+
+> **Claude compatibility:** Anthropic's documented remote custom-connector UI
+> accepts a server URL and OAuth client credentials, but does not currently
+> document arbitrary secret headers. Because this deployment requires
+> `X-TrainingPeaks-Auth`, use an MCP client with secure per-request header
+> injection. The built-in Claude.ai/Claude Desktop remote connector is not a
+> supported client for this stateless mode today; use the local stdio setup for
+> Claude Desktop instead. See [Anthropic's remote connector
+> documentation](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp).
 
 ---
 
@@ -410,13 +448,18 @@ Example with a planned start time:
 
 ## Security
 
-**TL;DR: Your cookie is encrypted on disk, exchanged for short-lived OAuth tokens, never shown to Claude, and only ever sent to TrainingPeaks. The server has no network ports.**
+**TL;DR:** Local stdio mode encrypts the cookie on disk and opens no network
+port. Remote Cloud Run mode receives the cookie in `X-TrainingPeaks-Auth` over
+HTTPS on every MCP request but never persists, logs, or caches it across
+requests. Neither mode returns the cookie to the language model.
 
 This server is designed with defence-in-depth. Your TrainingPeaks session cookie is sensitive - it grants access to your training data - so we treat it accordingly.
 
 > **Write access:** v2.0 adds full calendar management (create, update, delete workouts, events, notes, equipment, settings). All mutations go through Pydantic validation. The server cannot access billing or payment info.
 
-### Cookie Storage
+### Local Cookie Storage
+
+The following storage applies only to local stdio mode:
 
 | Platform | Primary Storage | Fallback |
 |----------|----------------|----------|
@@ -424,20 +467,27 @@ This server is designed with defence-in-depth. Your TrainingPeaks session cookie
 | Windows | Windows Credential Manager | Encrypted file |
 | Linux | Secret Service (GNOME/KDE) | Encrypted file |
 
-Your cookie is **never** stored in plaintext. The encrypted file fallback uses AES-256-GCM authenticated encryption with a PBKDF2-derived key (600,000 iterations) and a machine-specific salt.
+`tp-mcp auth` never writes your cookie to disk in plaintext. The encrypted file
+fallback uses AES-256-GCM authenticated encryption with a PBKDF2-derived key
+(600,000 iterations) and a machine-specific salt. The remote service does not
+store a TrainingPeaks cookie at all.
 
-### Cookie Never Leaks to AI
+### Cookie Never Leaks to the Model
 
-The AI assistant (Claude) **never sees your cookie value**. Multiple layers ensure this:
+The language model **never receives your cookie value** in tool arguments or
+results. In remote mode, the MCP client's transport layer necessarily handles
+the secret so it can add `X-TrainingPeaks-Auth`; configure that header through
+the client's secret facility, not through a prompt. Multiple server-side layers
+prevent disclosure:
 
 1. **Return value sanitisation**: Tool results are scrubbed for any keys containing `cookie`, `token`, `auth`, `credential`, `password`, or `secret` before being sent to Claude
 2. **Masked repr()**: The `BrowserCookieResult` and `CredentialResult` classes override `__repr__` to show `cookie=<present>` instead of the actual value
 3. **Sanitised exceptions**: Error messages use only exception type names, never full messages that could contain data
 4. **No logging**: Cookie values are never written to any log
 
-### Domain Hardcoding (Cannot Be Changed)
+### Local Browser Domain Hardcoding (Cannot Be Changed)
 
-The browser cookie extraction **only** accesses `.trainingpeaks.com`:
+Local browser cookie extraction **only** accesses `.trainingpeaks.com`:
 
 ```python
 # From src/tp_mcp/auth/browser.py - HARDCODED, not a parameter
@@ -446,30 +496,47 @@ cj = func(domain_name=".trainingpeaks.com")
 
 Claude cannot modify this via tool parameters. The only parameter is `browser` (chrome/firefox/etc), not the domain. To change the domain would require modifying the source code.
 
-### No Network Exposure
+### Transport Exposure
 
-The MCP server uses **stdio transport only** - it communicates with Claude Desktop via stdin/stdout, not over the network. There is no HTTP server, no open ports, no remote access.
+Local `tp-mcp serve` uses stdio only: it communicates with the MCP client via
+stdin/stdout, starts no HTTP server, and opens no port. Optional
+`tp-mcp serve-http` is intentionally network-facing and is designed for Cloud
+Run. It exposes `/mcp` over HTTPS, requires application-level MCP OAuth, and
+also requires `X-TrainingPeaks-Auth` on every authenticated MCP request. The
+remote service treats that header as request-scoped secret input and must never
+write it to Firestore, Secret Manager, logs, or a cross-request cache.
 
 ### Open Source
 
 This server is fully open source. You can audit every line of code before running it. Key security files:
 - [`src/tp_mcp/auth/browser.py`](src/tp_mcp/auth/browser.py) - Cookie extraction with hardcoded domain
 - [`src/tp_mcp/auth/encrypted.py`](src/tp_mcp/auth/encrypted.py) - AES-256-GCM credential encryption
+- [`src/tp_mcp/cloud/web.py`](src/tp_mcp/cloud/web.py) - Remote HTTP and OAuth routes
+- [`src/tp_mcp/server.py`](src/tp_mcp/server.py) - Transport-specific authentication and tool policy
 - [`src/tp_mcp/tools/_validation.py`](src/tp_mcp/tools/_validation.py) - Pydantic input validation
 - [`src/tp_mcp/tools/refresh_auth.py`](src/tp_mcp/tools/refresh_auth.py) - Result sanitisation
 - [`tests/test_tools/test_refresh_auth_security.py`](tests/test_tools/test_refresh_auth_security.py) - Security tests
 
 ## Authentication Flow
 
-The server uses a two-step authentication process:
+Local stdio mode uses a two-step TrainingPeaks authentication process:
 
 1. **Cookie to OAuth Token**: Your stored cookie is exchanged for a short-lived OAuth access token (expires in 1 hour)
 2. **Automatic Refresh**: Tokens are cached in memory and automatically refreshed before expiry
 
-This means:
+In local mode this means:
 - You only need to authenticate once with `tp-mcp auth`
 - API calls use proper Bearer token auth, not cookies
 - If your session cookie expires (typically after several weeks), use `tp_refresh_auth` in Claude or run `tp-mcp auth` again
+
+Remote mode has two independent credentials. Google-backed MCP OAuth identifies
+the invited athlete and authorizes `trainingpeaks:read` or
+`trainingpeaks:write`; the MCP client supplies that access token in
+`Authorization`. Separately, the client supplies the current TrainingPeaks
+cookie in `X-TrainingPeaks-Auth` on every `/mcp` request. The remote server uses
+the TrainingPeaks secret only within that request and does not persist or cache
+it across requests. `tp_refresh_auth` remains available locally but is hidden
+from remote clients.
 
 ## Development
 

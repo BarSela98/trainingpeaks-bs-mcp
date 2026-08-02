@@ -1,0 +1,13 @@
+# Cloud Build uses this file when archiving the source context. Default-deny so
+# browser profiles, ADC files, OAuth downloads, and unrelated workspace files
+# can never be uploaded merely because a new filename was not blacklisted.
+**
+!Dockerfile
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+!src/**
+src/**/__pycache__/
+src/**/*.pyc
+src/**/*.pyo
