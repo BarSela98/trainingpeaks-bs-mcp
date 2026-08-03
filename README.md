@@ -190,7 +190,23 @@ out. The tools' text output is unaffected either way.)*
 
 ## Setup Options
 
-### Option A: Auto-Setup with Claude Code
+### Option A: Claude Code Setup Script
+
+From the cloned repository, use this command in Claude Code's **Setup Options**:
+
+```bash
+bash .claude/setup.sh
+```
+
+The script is safe to rerun. It installs Git when necessary, adds a repo-local
+fallback Git identity only when no identity is configured, installs `uv`, uses
+an existing Python 3.10+ or installs Python 3.12, and syncs every dependency
+from `uv.lock`.
+
+Set `CLAUDE_GIT_USER_NAME`, `CLAUDE_GIT_USER_EMAIL`, or
+`CLAUDE_PYTHON_VERSION` in the environment to override the defaults.
+
+### Option B: Auto-Setup with Claude Code
 
 If you have [Claude Code](https://claude.ai/code), paste this prompt:
 
@@ -200,7 +216,7 @@ Set up the TrainingPeaks MCP server from https://github.com/BarSela98/trainingpe
 
 Claude will handle the installation and guide you through authentication step-by-step.
 
-### Option B: Standalone executable
+### Option C: Standalone executable
 
 Tagged releases publish self-contained executables for Linux, Windows, and
 Intel/Apple Silicon macOS. Download the asset for your platform, make it
@@ -215,7 +231,7 @@ chmod +x tp-mcp-macos-arm64  # macOS/Linux only
 The generated config uses the exact downloaded executable path, even if the
 file was renamed. Release assets include a `SHA256SUMS.txt` checksum file.
 
-### Option C: Manual Setup
+### Option D: Manual Setup
 
 #### Step 1: Install
 
