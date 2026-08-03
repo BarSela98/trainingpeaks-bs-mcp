@@ -220,7 +220,7 @@ class CloudWebHandlers:
         self.config = config
         self.provider = provider
 
-    async def healthz(self, request: Request) -> JSONResponse:
+    async def health(self, request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok", "transport": "streamable-http"})
 
     async def home(self, request: Request) -> HTMLResponse:
@@ -320,7 +320,7 @@ class CloudWebHandlers:
 
 
 def _bootstrap_app() -> Starlette:
-    async def healthz(request: Request) -> JSONResponse:
+    async def health(request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok", "mode": "bootstrap"})
 
     async def unavailable(request: Request) -> JSONResponse:
@@ -328,7 +328,7 @@ def _bootstrap_app() -> Starlette:
 
     return Starlette(
         routes=[
-            Route("/healthz", healthz, methods=["GET"]),
+            Route("/health", health, methods=["GET"]),
             Route("/mcp", unavailable),
             Route("/", unavailable),
         ]
@@ -376,7 +376,7 @@ def create_http_app(
         auth_server_provider=provider,
         custom_starlette_routes=[
             Route("/", handlers.home, methods=["GET"]),
-            Route("/healthz", handlers.healthz, methods=["GET"]),
+            Route("/health", handlers.health, methods=["GET"]),
             Route("/oauth/google/callback", handlers.google_callback, methods=["POST"]),
             Route("/oauth/confirm", handlers.confirm_authorization, methods=["POST"]),
         ],

@@ -269,7 +269,7 @@ The health endpoint is intentionally unauthenticated:
 
 ```bash
 export SERVICE_URL=https://trainingpeaks-mcp-...run.app
-curl --fail --show-error "${SERVICE_URL}/healthz"
+curl --fail --show-error "${SERVICE_URL}/health"
 ```
 
 The MCP endpoint must advertise OAuth when called without a bearer token:

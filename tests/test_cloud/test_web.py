@@ -22,7 +22,7 @@ async def test_health_and_oauth_discovery_are_public(cloud_config, store, cipher
         transport=httpx.ASGITransport(app=app),
         base_url=cloud_config.base_url,
     ) as client:
-        health = await client.get("/healthz")
+        health = await client.get("/health")
         authorization_metadata = await client.get("/.well-known/oauth-authorization-server")
         resource_metadata = await client.get("/.well-known/oauth-protected-resource/mcp")
 

@@ -68,7 +68,7 @@ class CloudConfig:
         bootstrap = env.get("TP_MCP_BOOTSTRAP", "0") == "1"
 
         # Bootstrap revisions only exist to obtain the permanent run.app URL.
-        # They expose healthz but deliberately do not expose an unauthenticated MCP.
+        # They expose the health endpoint but deliberately do not expose an unauthenticated MCP.
         if bootstrap:
             base_url = _canonical_base_url(env.get("TP_MCP_BASE_URL", "http://localhost"))
             return cls(

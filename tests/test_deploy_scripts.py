@@ -49,7 +49,7 @@ set -eu
 url="${{@: -1}}"
 printf 'curl %s\\n' "$url" >>"$FAKE_COMMAND_LOG"
 case "$url" in
-  */healthz|*/.well-known/oauth-authorization-server|*/.well-known/oauth-protected-resource/mcp)
+  */health|*/.well-known/oauth-authorization-server|*/.well-known/oauth-protected-resource/mcp)
     printf '200'
     ;;
   */register)
@@ -294,7 +294,7 @@ def test_deploy_smokes_zero_traffic_candidate_before_exact_revision_promotion(tm
     assert "--no-traffic" in commands[deploy_index]
     assert "--tag=candidate" in commands[deploy_index]
     assert "--to-revisions=trainingpeaks-mcp-00002-abc=100" in commands[promote_index]
-    for endpoint in ("/healthz", "/register", "/authorize", "/mcp"):
+    for endpoint in ("/health", "/register", "/authorize", "/mcp"):
         smoke_index = next(index for index, command in enumerate(commands) if command.endswith(endpoint))
         assert deploy_index < smoke_index < promote_index
 

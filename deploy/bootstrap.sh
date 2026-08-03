@@ -257,8 +257,8 @@ gcloud run deploy "$SERVICE" \
   --min-instances=0 \
   --timeout=300s \
   --port=8080 \
-  --startup-probe="httpGet.path=/healthz,httpGet.port=8080,timeoutSeconds=3,periodSeconds=5,failureThreshold=12" \
-  --liveness-probe="httpGet.path=/healthz,httpGet.port=8080,timeoutSeconds=3,periodSeconds=30,failureThreshold=3" \
+  --startup-probe="httpGet.path=/health,httpGet.port=8080,timeoutSeconds=3,periodSeconds=5,failureThreshold=12" \
+  --liveness-probe="httpGet.path=/health,httpGet.port=8080,timeoutSeconds=3,periodSeconds=30,failureThreshold=3" \
   --allow-unauthenticated \
   --set-env-vars="TP_MCP_BOOTSTRAP=1,GOOGLE_CLOUD_PROJECT=${PROJECT_ID},TP_MCP_FIRESTORE_DATABASE=${FIRESTORE_DATABASE},TP_MCP_KMS_KEY=projects/${PROJECT_ID}/locations/${REGION}/keyRings/${KMS_KEYRING}/cryptoKeys/${KMS_KEY}"
 

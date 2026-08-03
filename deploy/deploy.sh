@@ -75,8 +75,8 @@ gcloud run deploy "$SERVICE" \
   --min-instances=0 \
   --timeout=300s \
   --port=8080 \
-  --startup-probe="httpGet.path=/healthz,httpGet.port=8080,timeoutSeconds=3,periodSeconds=5,failureThreshold=12" \
-  --liveness-probe="httpGet.path=/healthz,httpGet.port=8080,timeoutSeconds=3,periodSeconds=30,failureThreshold=3" \
+  --startup-probe="httpGet.path=/health,httpGet.port=8080,timeoutSeconds=3,periodSeconds=5,failureThreshold=12" \
+  --liveness-probe="httpGet.path=/health,httpGet.port=8080,timeoutSeconds=3,periodSeconds=30,failureThreshold=3" \
   --allow-unauthenticated \
   --no-traffic \
   --tag="$candidate_tag" \
@@ -126,7 +126,7 @@ expect_candidate_status() {
 }
 
 printf 'Smoke-testing candidate revision %s at %s\n' "$candidate_revision" "$candidate_url"
-expect_candidate_status 200 "health endpoint" "${candidate_url}/healthz"
+expect_candidate_status 200 "health endpoint" "${candidate_url}/health"
 expect_candidate_status 200 "OAuth authorization metadata" \
   "${candidate_url}/.well-known/oauth-authorization-server"
 expect_candidate_status 200 "OAuth protected-resource metadata" \
@@ -215,5 +215,5 @@ gcloud run services update-traffic "$SERVICE" \
 printf '\nDeployment complete.\n'
 printf 'Revision: %s\n' "$candidate_revision"
 printf 'MCP endpoint: %s/mcp\n' "$service_url"
-printf 'Health check: %s/healthz\n' "$service_url"
+printf 'Health check: %s/health\n' "$service_url"
 printf 'OAuth redirect: %s/oauth/google/callback\n' "$service_url"
