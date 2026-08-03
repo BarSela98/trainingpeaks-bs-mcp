@@ -192,8 +192,38 @@ out. The tools' text output is unaffected either way.)*
 
 ### Option A: Claude Code Setup Script
 
-Clone the repository, enter it, and then run the setup script from Claude
-Code's **Setup Options**:
+#### Step 1: Install and configure Git
+
+Git must be available before the repository can be cloned. Check it first:
+
+```bash
+git --version
+```
+
+If that command fails, install Git for your system:
+
+- macOS: `xcode-select --install` or `brew install git`
+- Ubuntu/Debian: `sudo apt-get update && sudo apt-get install -y git`
+- Fedora/RHEL: `sudo dnf install -y git`
+
+Configure your Git identity only when it is not already set:
+
+```bash
+if ! git config --global --get user.name >/dev/null; then
+  read -r -p "Git user name: " git_user_name
+  git config --global user.name "$git_user_name"
+fi
+
+if ! git config --global --get user.email >/dev/null; then
+  read -r -p "Git email: " git_user_email
+  git config --global user.email "$git_user_email"
+fi
+```
+
+#### Step 2: Clone and set up the project
+
+Clone the repository, enter it, and run the script from Claude Code's
+**Setup Options**:
 
 ```bash
 git clone https://github.com/BarSela98/trainingpeaks-bs-mcp.git
