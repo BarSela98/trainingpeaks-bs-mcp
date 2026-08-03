@@ -192,16 +192,18 @@ out. The tools' text output is unaffected either way.)*
 
 ### Option A: Claude Code Setup Script
 
-From the cloned repository, use this command in Claude Code's **Setup Options**:
+Clone the repository, enter it, and then run the setup script from Claude
+Code's **Setup Options**:
 
 ```bash
+git clone https://github.com/BarSela98/trainingpeaks-bs-mcp.git
+cd trainingpeaks-bs-mcp
 bash .claude/setup.sh
 ```
 
-The script is safe to rerun. It installs Git when necessary, adds a repo-local
-fallback Git identity only when no identity is configured, installs `uv`, uses
-an existing Python 3.10+ or installs Python 3.12, and syncs every dependency
-from `uv.lock`.
+The script is safe to rerun. It verifies Git, adds a repo-local fallback Git
+identity only when no identity is configured, installs `uv`, uses an existing
+Python 3.10+ or installs Python 3.12, and syncs every dependency from `uv.lock`.
 
 Set `CLAUDE_GIT_USER_NAME`, `CLAUDE_GIT_USER_EMAIL`, or
 `CLAUDE_PYTHON_VERSION` in the environment to override the defaults.
